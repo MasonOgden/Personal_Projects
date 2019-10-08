@@ -1,0 +1,59 @@
+---
+title: "Spotify"
+author: "Mason Ogden"
+date: "February 1, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(stringr)
+spot <- read.csv('C:/Users/mogde/Documents/spotify_playlist.csv')
+spot_shuffled <- read.csv('C:/Users/mogde/Documents/spotify_shuffled.csv')
+names(spot) <- c('song_name','artist','artist_code','album_name','album_num')
+```
+I used one of my own playlists 'Guitars and Keyboards' for this analysis. My playlist has 18 artists with 73 songs from a total of 34 albums. To get my observed shuffled playlist, I clicked 'SHUFFLE PLAY' and then recorded the order in which the songs played, as well as the artist and the album. 
+
+Using the sample() function, I will randomly shuffle the ordered spotify playlist 1000 times and look
+for runs where the same artist was played 3 or more times in a row. 
+```{r}
+nreps <- 1000
+thousand_shuffles <- lapply(1:nreps, function(x) as.character(sample(spot$artist_code)))
+# 'thousand_shuffles' is a list with 1000 entries; every entry being a list with 73 shuffled letters in it. 
+thousand_run_lengths <- rep(list(''), nreps) # Initialize list
+for (i in 1:nreps) { # For each of the 1000 shuffled playlists in thousand_shuffles
+  thousand_run_lengths[[i]] <- rle(thousand_shuffles[[i]])$lengths # Get the lengths of the longest run of songs for every artist
+}
+observed_run_length <- rle(as.character(spot_shuffled$artist_code))$lengths  # Get run lengths for the playlist shuffled by spotify
+obs_num_3_or_more <- sum(observed_run_length >= 3) # Count how many of those spotify run lengths were 3 songs or longer
+sim_num_3_or_more <- rep(list(''), nreps) # Initialize list
+for (j in 1:nreps) { # For each of the 1000 vectors of run lengths
+  sim_num_3_or_more[[j]] <- sum(thousand_run_lengths[[j]] >= 3) # Calculate how many runs were 3 songs or longer for each shuffle
+}
+sim_num_3_or_more <- unlist(sim_num_3_or_more) # Turn the list of runs into one long vector
+mean_sim_run_length <- mean(sim_num_3_or_more)# Find the mean length  of all simulated runs
+```
+
+
+```{r}
+sim_3_data <- data.frame(value=sim_num_3_or_more)
+names(sim_3_data) <- 'num_3_or_more'
+ggplot(sim_3_data, aes(x=num_3_or_more)) + 
+  geom_histogram(binwidth=1, fill='coral') + 
+  xlab('Number of Runs of 3 or More') +
+  ylab('Count') + 
+  ggtitle('Distribution of Number of Runs of 3 Songs or More \nby the Same Artist in 1000 Shuffled Playlists')
+
+```
+
+So, I know that there were 3 runs of 3 or more in my playlist that was shuffled by Spotify. What is the probability of getting this many runs of at least 3 if the playlist order was \textit{really} random?
+```{r}
+sim_p_value <- sum(sim_num_3_or_more >= obs_num_3_or_more) / nreps
+sim_p_value
+```
+
+The probability that getting at least 3 songs by the same artist 3 separate times if the shuffling method were truly random is 0.018. Based on this simulated p-value, I conclude that clicking 'Shuffle Play' on a playlist on Spotify does not truly randomize the order of songs. 
