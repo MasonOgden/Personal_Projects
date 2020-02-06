@@ -1,0 +1,26 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1581010234453.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "1364220095",
+    "id" : "D823B4D5",
+    "lastKnownWriteTime" : 1581011134,
+    "last_content_update" : 1581011134995,
+    "path" : "C:/Users/mogde/Desktop/R Weather/API_test.Rmd",
+    "project_path" : "API_test.Rmd",
+    "properties" : {
+        "cursorPosition" : "9,49",
+        "scrollLine" : "1",
+        "tempName" : "Untitled1"
+    },
+    "read_only" : false,
+    "read_only_alternatives" : [
+    ],
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_markdown"
+}

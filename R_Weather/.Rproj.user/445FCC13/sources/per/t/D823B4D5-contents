@@ -1,0 +1,16 @@
+---
+title: "API_test"
+author: "Mason Ogden"
+date: "2/6/2020"
+output: html_document
+---
+
+```{r packages and API}
+library(owmr)
+owmr_settings("033376a6c6d6c03f7b2cc22ab3ec24b4")
+```
+
+```{r get data}
+forecast <- get_forecast_daily("San Luis Obispo", units="imperial")
+```
+

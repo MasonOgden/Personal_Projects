@@ -1,0 +1,1 @@
+Plot x: 3 pointers made vs. y: 3 point percentage

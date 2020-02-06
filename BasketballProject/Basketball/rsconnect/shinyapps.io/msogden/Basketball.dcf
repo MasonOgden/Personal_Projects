@@ -1,0 +1,12 @@
+name: Basketball
+title: Basketball
+username:
+account: msogden
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 1591847
+bundleId: 2678874
+url: https://msogden.shinyapps.io/Basketball/
+when: 1576690447.69204
+asMultiple: FALSE
+asStatic: FALSE

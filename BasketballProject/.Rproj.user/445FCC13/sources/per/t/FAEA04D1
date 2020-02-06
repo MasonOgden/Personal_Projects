@@ -1,0 +1,25 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1576253086238.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "3026099417",
+    "id" : "FAEA04D1",
+    "lastKnownWriteTime" : 1576690312,
+    "last_content_update" : 1576690312851,
+    "path" : "C:/Users/mogde/Desktop/Git Repositories/BasketballProject/Basketball/server.R",
+    "project_path" : "Basketball/server.R",
+    "properties" : {
+        "cursorPosition" : "130,80",
+        "scrollLine" : "0"
+    },
+    "read_only" : false,
+    "read_only_alternatives" : [
+    ],
+    "relative_order" : 4,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

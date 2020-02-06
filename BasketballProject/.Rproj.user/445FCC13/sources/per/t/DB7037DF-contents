@@ -1,0 +1,101 @@
+---
+title: "Data Reading and Cleaning"
+author: "Mason Ogden"
+date: "December 16, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r read in and merge game data}
+
+start_path <- "C:/Users/Mason/Desktop/Git Repositories/BasketballProject/GameData/"
+
+all_data <- data.frame(stringsAsFactors=FALSE)
+
+file_name_list <- list.files(start_path)
+for (i in 1:length(file_name_list)) {
+  current_data <- read.table(str_c(start_path, file_name_list[i]), header=TRUE, sep=",",
+                             stringsAsFactors = FALSE) %>%
+    select(1:24, -Rk, -X)
+  win_loss <- current_data %>%
+    get_game_wl
+  current_data <- current_data %>%
+    mutate(win_loss = win_loss,
+           team = str_remove(file_name_list[i], pattern=".txt"))
+  all_data <- bind_rows(all_data, current_data)
+}
+```
+
+```{r read in and merge game rebounding data}
+
+start_path <- "C:/Users/mogde/Desktop/Git Repositories/BasketballProject/RB_percent_data/"
+
+rb_data <- data.frame(stringsAsFactors = FALSE)
+
+file_name_list <- list.files(start_path)
+
+for (j in 1:length(file_name_list)) {
+  cur_data <- read.table(str_c(start_path, file_name_list[j]), header=TRUE, sep=",",
+                         stringsAsFactors = FALSE) %>%
+    select(Rk, Tm, ORB, DRB, TRB) %>%
+    rename(game = Rk, team = Tm)
+  #print(file_name_list[j])
+  sum_rb <- cur_data %>%
+    get_sum_rb
+  cur_data <- cur_data %>%
+    mutate(sum_rb = sum_rb,
+           player = str_remove(file_name_list[j], pattern=".txt"))
+  rb_data <- bind_rows(rb_data, cur_data)
+  
+}
+
+write.csv(rb_data, file="C:/Users/mogde/Desktop/Git Repositories/BasketballProject/rb_data.csv")
+```
+
+
+```{r function for calcuating win/loss}
+get_game_wl <- function(data) {
+  win_count <- 0
+  loss_count <- 0
+  wl_vec <- c()
+  for (i in 1:nrow(data)) {
+    if (data[i, 4] == "W") {
+      win_count = win_count + 1
+    }
+    else {
+      loss_count = loss_count + 1
+    }
+    if (loss_count == 0) {
+      wl_vec <- c(wl_vec, NA)
+    }
+    else {
+      wl_vec <- c(wl_vec, win_count / loss_count)
+    }
+  }
+  
+  wl_vec
+}
+```
+
+
+```{r function for summing rebounds}
+get_sum_rb <- function(data) {
+  rb_sum <- 0
+  rb_vec <- c()
+  for (i in 1:nrow(data)) {
+    if (!is.na(data[i, 5])) {
+      rb_sum = rb_sum + data[i, 5]
+      rb_vec <- c(rb_vec, rb_sum)
+    }
+    else {
+      data[i, 5] = rb_sum
+      rb_vec <- c(rb_vec, rb_sum)
+    }
+  }
+  rb_vec
+}
+```
+
