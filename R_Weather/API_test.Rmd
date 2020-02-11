@@ -13,6 +13,10 @@ owmr_settings("033376a6c6d6c03f7b2cc22ab3ec24b4")
 ```
 
 ```{r get data}
-forecast <- get_forecast_daily("San Luis Obispo", units="imperial")
+forecast <- get_forecast_daily("London", units="metric")
+```
+
+```{r}
+forecast
 ```
 
