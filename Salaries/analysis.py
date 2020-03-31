@@ -23,6 +23,5 @@ sns.distplot(sal_df['Total Pay & Benefits'], hist = False, kde = True, kde_kws =
 plt.title("Total Pay (including benefits) of California University System Professors in 2018")
 plt.xlabel("Total Pay and Benefits ($)")
 plt.ylabel("Density")
-plt.axvline(my_mean)
-
 my_mean = sal_df["Total Pay & Benefits"].mean()
+plt.axvline(my_mean)
