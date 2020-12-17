@@ -1,0 +1,218 @@
+Packages
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(broom.mixed)
+library(skimr)
+library(keras)
+library(rules)
+library(discrim)
+library(baguette)
+```
+
+Reading in data
+
+```{r, warning=FALSE, message=FALSE}
+all_data <- read_csv("datasets/train.csv") %>%
+  dplyr::select(-Name, -Ticket, -Cabin) %>%
+  mutate(Pclass = as.factor(Pclass),
+         Survived = as.factor(Survived)) %>%
+  mutate_if(is.character, as.factor)
+```
+
+Defining preprocessing recipe
+
+```{r}
+my_recipe <- recipe(
+  Survived ~ ., data = all_data # define data and outcome variable
+) %>%
+  update_role(PassengerId, new_role = "ID") %>% # make sure model knows not to include PassengerId in analysis
+  step_medianimpute(all_numeric()) %>% # fill NAs in numeric columns with the median
+  step_modeimpute(all_nominal(), -all_outcomes()) %>% # fill NAs in categorical columns with the mode
+  step_dummy(all_nominal(), -all_outcomes()) %>% # dummify categorical variables
+  step_normalize(all_numeric(), -PassengerId, -Pclass_X2, -Pclass_X3, -Sex_male, -Embarked_Q, -Embarked_S) # standardize numeric variables
+```
+
+Defining all models:
+
+```{r}
+model_names <- c("Logistic Regression", "C5.0", "LDA", "Regularized LDA", "Flexible LDA", "Naive Bayes", "Bagged MARS",
+                 "Bagged Decision Tree", "Boosted Tree", "Decision Tree", "MARS", "MLP", "KNN", "Random Forest")
+
+lr_model <- logistic_reg() %>%
+  set_engine("glm")
+
+c5_model <- C5_rules() %>%
+  set_engine("C5.0")
+
+lda <- discrim_linear() %>%
+  set_engine("MASS")
+
+reg_lda <- discrim_regularized() %>%
+  set_engine("klaR")
+
+flex_lda <- discrim_flexible() %>%
+  set_engine("earth")
+
+naive_bayes <- naive_Bayes() %>%
+  set_engine("klaR")
+
+bagged_mars <- bag_mars() %>%
+  set_engine("earth") %>%
+  set_mode("classification")
+
+bagged_dtree <- bag_tree() %>%
+  set_engine("C5.0") %>%
+  set_mode("classification")
+
+boosted_tree <- boost_tree() %>%
+  set_engine("C5.0") %>%
+  set_mode("classification")
+
+dtree <- decision_tree() %>%
+  set_engine("C5.0") %>%
+  set_mode("classification")
+
+mars_model <- parsnip::mars() %>%
+  set_engine("earth") %>%
+  set_mode("classification")
+
+mlp_model <- mlp() %>%
+  set_engine("nnet") %>%
+  set_mode("classification")
+
+knn_model <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+random_forest <- rand_forest(trees = 1000) %>%
+  set_engine("randomForest") %>%
+  set_mode("classification")
+
+models_list <- list(lr_model, c5_model, lda, reg_lda, flex_lda, naive_bayes,
+                    bagged_mars, bagged_dtree, boosted_tree, dtree, mars_model,
+                    mlp_model, knn_model, random_forest)
+```
+
+Fitting the models with workflows:
+
+```{r, message=FALSE, warning=FALSE}
+create_workflow <- function(this_model) {
+  workflow() %>%
+    add_model(this_model) %>%
+    add_recipe(my_recipe)
+}
+
+workflowed_models_list <- map(models_list, create_workflow)
+```
+
+Doing cross-validation:
+
+```{r, message=FALSE, warning=FALSE}
+extract_binary_accuracy <- function(cv_model_workflow) {
+  cv_model_workflow %>%
+    collect_metrics() %>%
+    filter(.metric == "accuracy") %>% 
+    pull(mean)
+}
+
+extract_accuracy_sd <- function(cv_model_workflow) {
+  cv_model_workflow %>%
+    collect_metrics() %>%
+    filter(.metric == "accuracy") %>% 
+    pull(std_err)
+}
+
+folds <- vfold_cv(all_data, v = 5) # 5 folds
+
+cv_model_workflows <- map(workflowed_models_list, ~fit_resamples(.x, folds))
+
+cv_accuracies <- map_dbl(cv_model_workflows, extract_binary_accuracy)
+
+cv_acc_sds <- map_dbl(cv_model_workflows, extract_accuracy_sd)
+
+summary_df <- data.frame(model_names, cv_accuracies, cv_acc_sds) %>%
+  rename(model = model_names, cv_mean_accuracy = cv_accuracies, std_err = cv_acc_sds)
+
+summary_df %>%
+  arrange(desc(cv_mean_accuracy))
+```
+
+Looks like the best model is the random forest, so I'll tune the hyperparameters on that one. 
+
+```{r}
+random_forest_tune <- rand_forest(
+  mtry = tune(), 
+  trees = 1000,
+  min_n = tune()
+) %>%
+  set_engine("randomForest") %>%
+  set_mode("classification")
+
+rf_tune_workflow <- workflow() %>%
+  add_recipe(my_recipe) %>%
+  add_model(random_forest_tune)
+
+rf_tune_results <- rf_tune_workflow %>%
+  tune_grid(resamples = folds,
+            grid = 25)
+```
+
+Exploring tuning results:
+
+```{r}
+rf_tune_results %>%
+  collect_metrics() %>%
+  mutate(mtry = as.factor(mtry)) %>%
+  ggplot(aes(min_n, mean, color = mtry)) + 
+  geom_line(size = 1.5, alpha = 0.6) + 
+  geom_point(size = 2) + 
+  facet_wrap(~.metric, scales = "free", nrow = 2) + 
+  scale_color_viridis_d(option = "plasma", begin= 0.9, end = 0)
+
+rf_tune_results %>%
+  show_best("roc_auc")
+
+best_rf <- rf_tune_results %>%
+  select_best("roc_auc")
+
+best_rf
+```
+
+Getting final model:
+
+```{r}
+final_rf_wf <- workflowed_models_list[[14]] %>%
+  finalize_workflow(best_rf)
+
+final_rf_cv <- final_rf_wf %>%
+  fit_resamples(folds)
+
+final_rf_cv %>%
+  collect_metrics()
+
+final_rf_fit <- final_rf_wf %>%
+  fit(data = all_data)
+
+final_rf_fit
+```
+
+Getting test set predictions:
+
+```{r, message=FALSE, warning=FALSE}
+test_data <- read_csv("datasets/test.csv") %>%
+  dplyr::select(-Name, -Ticket, -Cabin) %>%
+  mutate(Pclass = as.factor(Pclass)) %>%
+  mutate_if(is.character, as.factor)
+
+out_preds <- final_rf_fit %>%
+  predict(test_data) %>%
+  bind_cols(test_data) %>%
+  select(PassengerId, .pred_class) %>%
+  rename(Survived = .pred_class)
+  
+out_preds %>%
+  write_csv("datasets/submission_1.csv")
+```
+
