@@ -1,7 +1,8 @@
-#-----Packages-----#
-using CSV, DataFrames, StatsModels, GLM, Statistics, StatsBase, ScikitLearn, Lathe, Missings
+#%% Packages
+using CSV, DataFrames, StatsModels, Statistics, StatsBase, ScikitLearn, Lathe, Missings
 
-#-----Data-----#
+#%% Data
+
 cd("C:/Users/Mason/Desktop/Git Repositories/Personal_Projects/Kaggle/Titanic")
 train = DataFrame(CSV.File("datasets/train.csv"))
 test = DataFrame(CSV.File("datasets/test.csv"))
@@ -11,7 +12,7 @@ DataFrame(
     col_type = eltype.(eachcol(train))
 )
 
-#-----Data Cleaning-----#
+#%% Data Cleaning
 
 num_missing(colname) = train[:, colname] .|> ismissing |> sum
 
@@ -66,7 +67,7 @@ training_info = Dict(
     "fare_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train[:, :Fare], train[:, :Fare] |> skipmissing |> median))
 )
 
-#-----Making Cross-Validation Folds-----#
+#%% Making Cross-Validation Folds
 function get_cross_val_splits(data, k)
     # all indices
     all_indices = Set{Int}(1:nrow(data))
@@ -77,7 +78,7 @@ function get_cross_val_splits(data, k)
     # will be of the form
     folds = []
     for i in 1:(k - 1)
-        test_indices = Set(sample(collect(indices_remaining), fold_size, replace=false))
+        test_indices = Set(StatsBase.sample(collect(indices_remaining), fold_size, replace=false))
         train_indices = setdiff(all_indices, test_indices)
 
         # remove these test indices from the list of indices
@@ -99,7 +100,7 @@ end
 
 folds = get_cross_val_splits(train, 10)
 
-#-----Fitting Model-----#
+#%% Fitting Model
 model1_cols = [:Pclass]
 model2_cols = [:Pclass, :Sex]
 model3_cols = [:Pclass, :Sex, :Age]
@@ -144,7 +145,7 @@ function cross_validation_metrics(folds, model)
         # fit model on training data
         ScikitLearn.fit!(model, X, y)
         # predict on test data:
-        preds = convert.(Int, round.(Vector{Float64}(predict(lr_model, X_test))))
+        preds = convert.(Int, round.(Vector{Float64}(ScikitLearn.predict(lr_model, X_test))))
 
         results_df = DataFrame(
             prediction = preds,
@@ -172,21 +173,18 @@ function cross_validation_metrics(folds, model)
     return out_metrics
 end
 
-model_names = string.(model_list)
-model_results = [cross_validation_metrics(folds, model) for model in model_list]
+# results_df = DataFrame(
+#     model = model_names,
+#     accuracy = [metrics_dict["acc"] for metrics_dict in model_results],
+#     precision = [metrics_dict["prec"] for metrics_dict in model_results],
+#     recall = [metrics_dict["recall"] for metrics_dict in model_results],
+#     true_positive_rate = [metrics_dict["tpr"] for metrics_dict in model_results],
+#     false_positive_rate = [metrics_dict["fpr"] for metrics_dict in model_results],
+#     )
 
-results_df = DataFrame(
-    model = model_names,
-    accuracy = [metrics_dict["acc"] for metrics_dict in model_results],
-    precision = [metrics_dict["prec"] for metrics_dict in model_results],
-    recall = [metrics_dict["recall"] for metrics_dict in model_results],
-    true_positive_rate = [metrics_dict["tpr"] for metrics_dict in model_results],
-    false_positive_rate = [metrics_dict["fpr"] for metrics_dict in model_results],
-    )
+# sort(results_df, :accuracy, rev=true)
 
-sort(results_df, :accuracy, rev=true)
-
-#-----ScikitLearn-----#
+#%% ScikitLearn
 
 @sk_import linear_model: LogisticRegression
 @sk_import neural_network: MLPClassifier
@@ -209,13 +207,9 @@ classifiers = [
     LogisticRegression(fit_intercept=true)
     ]
 
-out = cross_validation_metrics(folds, lr_model)
+lr_model = LogisticRegression()
 
-dummifier = Lathe.preprocess.OneHotEncoder()
-
-dummifier.predict(train, :Sex)
-
-select!(train, Not(:Sex))
+#out = cross_validation_metrics(folds, lr_model)
 
 X_train = select(process_data(train, training_info), Not(:Survived))
 y_train = train[:, :Survived]
@@ -224,10 +218,11 @@ DataFrame(
     col_name = X_train |> names,
     col_type = eltype.(eachcol(X_train))
 )
+
 X_train[:, :Age] .|> ismissing |> sum
 
 disallowmissing(X_train[:, :Age])
 
 convert(Vector{Float64}, X_train[:, :Age])
 
-ScikitLearn.fit!(lr_model, X_train, y_train)
+#ScikitLearn.fit!(lr_model, X_train, y_train)
