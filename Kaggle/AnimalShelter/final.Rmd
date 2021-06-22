@@ -1,0 +1,1034 @@
+---
+title: "Final Project - Predicting Shelter Animal Outcomes"
+author: "Mason Ogden"
+date: "6/5/2021"
+output: html_document
+---
+
+```{r libraries, warning = FALSE, message = FALSE, include = FALSE}
+library(tidyverse)
+library(magrittr)
+library(lubridate)
+library(tidymodels)
+library(baguette)
+library(rules)
+library(discrim)
+library(purrr)
+library(fastDummies)
+
+set.seed(143)
+```
+
+```{r dirs and data, message = FALSE, warning = FALSE, include = FALSE}
+dir <- getwd()
+
+preproc_dir <- dir %>%
+  paste0("/preprocessed_data")
+
+train <- preproc_dir %>%
+  paste0("/train_preprocessed.csv") %>%
+  read_csv()
+```
+
+<br>
+
+## Overview and Exploratory Data Analysis
+
+In [this](https://www.kaggle.com/c/shelter-animal-outcomes/data) Kaggle competition, participants were asked to predict the outcome of shelter animals in the Austin area. The data was collected between 2013 and 2016, and contained information on 38,185 cats and dogs (26,729 in the training set, 11,456 in the testing set). For pets in these shelters, there were five possible outcomes: adoption, returned to owner, transferred to another shelter, euthanasia, or death. Figure 1 shows how many pets experienced each outcome in the training data. 
+
+<br>
+
+```{r outcome freqs, echo = FALSE}
+desc_outcomes <- train %>%
+  count(outcome) %>% 
+  arrange(desc(n)) %>% 
+  pull(outcome)
+
+train %>%
+  mutate(outcome = factor(outcome, levels = desc_outcomes)) %>%
+  count(outcome) %>% 
+  ggplot(aes(x = outcome, y = n)) + 
+  geom_col(fill = "dodgerblue2", width = 0.8) + 
+  labs(x = "Outcome", y = "Count",
+       title = "Figure 1: Distribution of Animal Outcomes in the Training Data") +
+  theme_minimal()
+```
+
+<br>
+
+Various attribues of the pets were also recorded. The first and most obvious is whether the pet was a cat or a dog. The proportion of cats and dogs can be seen in Figure 2. There is quite an imbalance in these proportions, with 58% of the animals being dogs and only 42% being cats. 
+
+<br>
+
+```{r cat dog freqs, echo = FALSE}
+type_order <- train %>%
+  count(animal_type) %>% 
+  arrange(desc(n)) %>%
+  pull(animal_type)
+
+train %>%
+  count(animal_type) %>%
+  mutate(
+    animal_type = factor(animal_type, levels = type_order),
+    prop = n / sum(n)
+    ) %>% 
+  ggplot(aes(x = animal_type, y = prop)) + 
+  geom_col(fill = "dodgerblue2", width = 0.8) + 
+  ylim(0, 1) + 
+  labs(x = "Animal Type", y = "Frequency",
+       title = "Figure 2: Proportion of Cats and Dogs in Training Data") +
+  theme_minimal()
+```
+
+<br>
+
+Additionally, the sex of each pet was recorded, including whether they were spayed or neutered. Figure 3 shows the counts of each sex, as well as how many within each sex were spayed or neutered. There were also 1074 pets for which their sex was unknown. It's clear from the figure that the majority of both male and female pets were spayed or neutered. 
+
+<br>
+
+```{r sex freqs, echo = FALSE}
+sex_order <- train %>% 
+  drop_na() %>%
+  mutate(sex_bin = case_when(
+    str_detect(sex, pattern = "Male") ~ "Male",
+    str_detect(sex, pattern = "Female") ~ "Female",
+    TRUE ~ sex)
+  ) %>%
+  dplyr::select(sex, sex_bin) %>%
+  count(sex_bin) %>%
+  arrange(desc(n)) %>% 
+  pull(sex_bin)
+
+train %>% 
+  drop_na() %>%
+  mutate(sex_bin = case_when(
+    str_detect(sex, pattern = "Male") ~ "Male",
+    str_detect(sex, pattern = "Female") ~ "Female",
+    TRUE ~ sex),
+         sex_status = case_when(
+    str_detect(sex, pattern = "Neutered") | str_detect(sex, pattern = "Spayed") ~ "Spayed/Neutered",
+    str_detect(sex, pattern = "Intact") ~ "Intact",
+    TRUE ~ sex)
+    ) %>%
+  dplyr::select(sex, sex_bin, sex_status) %>%
+  group_by(sex_bin) %>%
+  count(sex_status) %>%
+  mutate(sex_bin = factor(sex_bin, levels = sex_order)) %>%
+  ggplot(aes(x = sex_bin, y = n, fill = sex_status)) + 
+  geom_col(position = "stack") + 
+  labs(x = "Sex", y = "Count", fill = "Status",
+       title = "Figure 3: Sex and Status of 26,728 Animals in the Training Data") + 
+  theme_minimal()
+```
+
+<br>
+
+The age of each pet was also recorded. The distribution of pet ages (shown in Figure 4) is very right-skewed, with most pets being in the 0 - 2 years old range, and few very old pets. 
+
+<br>
+
+```{r age hist, echo = FALSE}
+train %>%
+  drop_na() %>%
+  ggplot(aes(x = age)) + 
+  geom_histogram(binwidth = 2, fill = "dodgerblue2") + 
+  theme_minimal() + 
+  labs(x = "Age (years)",
+       y = "Count",
+       title = "Figure 4: Distribution of Animal Age in Training Data")
+```
+
+
+<br>
+
+There was also a 'breed' column in the data that contained extremely specific information about the genealogy of each pet. There were 1380 unique breeds in the data, which was far too many to effectively include the variable in any model. This variable was dropped from the data, since collapsing categories would have been extremely time-consuming, and would require extensive knowledge of dogs, which I do not have, having never owned a pet. 
+
+<br>
+
+Also, extensive and very specific information was collected about the color and pattern of each pet. In fact, the training data contained 366 different colorings/patterns. In order to simplify the modeling process and tidy up the data, these 366 colorings were collapsed into just 33 categories, whose frequencies are shown in Figure 4. The most common coloring by far was 'Multiple colors'. There were 2x more multi-colored pets than the next most common coloring, Tabby. 
+
+<br>
+
+```{r color freqs, echo = FALSE}
+desc_colors <- train %>%
+  count(color) %>% 
+  arrange(n) %>% pull(color)
+
+train %>%
+  mutate(color = factor(color, levels = desc_colors)) %>% 
+  count(color) %>%
+  ggplot(aes(x = color, y = n)) + 
+  geom_col(fill = "dodgerblue2") + 
+  coord_flip() + 
+  labs(x = "Animal Coloring",
+       y = "Count",
+       title = "Figure 5: Animal Coloring of Animals in Training Data") + 
+  theme_minimal()
+```
+
+<br>
+
+Finally, the date that the given outcome took place is recorded. The first outcome occurred on October 1st, 2013, while the final outcome occurred on February 21st, 2016. The date as a whole was not useful for prediction, however I extracted both the month and the year of the outcome for each pet, as they could be helpful predictor variables. It's possible that more pets are adopted during the holidays, or that the number of pets experiencing any outcome is different from year to year. 
+
+Based on Figure 5, there do appear to be month-to-month differences in the number of animal outcomes. October, November, and December have higher counts than any other month. 
+
+<br>
+
+```{r month freqs, echo = FALSE}
+train %>%
+  count(outcome_month) %>%
+  ggplot(aes(x = outcome_month, y = n)) + 
+  geom_col(fill = "dodgerblue2") + 
+  scale_x_continuous(breaks = 1:12, labels = 1:12) + 
+  labs(x = "Month",
+       y = "Number of Animals Experiencing Given Outcome",
+       title = "Figure 6: Distribution of Animal Outcome Occurrences by Month") + 
+  theme_minimal()
+```
+
+<br>
+
+The distribution of outcomes by year, shown in Figure 6, is clearly reflecting the time frame in which the data was collected. Since the entirity of 2014 and 2015 were included in the data, but only a few months of 2013 and 2016, there were far more observations in the complete years. 
+
+<br>
+
+```{r year freqs, echo = FALSE}
+train %>%
+  count(outcome_year) %>%
+  ggplot(aes(x = outcome_year, y = n)) + 
+  geom_col(fill = "dodgerblue2", width = 0.8) + 
+  labs(x = "Year", y = "Number of Animals Experiencing Given Outcome",
+       title = "Figure 7: Distribution of Animal Outcome Occurrences by Year") + 
+  theme_minimal()
+```
+
+<br>
+
+All code used to preprocess the data is shown below, including the final preprocessing recipe. To gain even more potentially useful information for prediction, I also added indicator variables to the data that indicated whether the date of the outcome was a holiday, using 4 major US holidays. Many theorize that the number of adopted pets increases on holidays, since they are given as gifts to family and friends. 
+
+```{r not run preproc, eval = FALSE}
+# define working directory
+dir <- getwd()
+
+# raw data directory
+dataset_dir <- dir %>%
+  paste0("/datasets")
+
+# read in training data
+df <- dataset_dir %>%
+  paste0("/train.csv") %>%
+  read_csv() %>%
+  rename(animal_id = AnimalID, animal_name = Name, outcome_datetime = DateTime, 
+         outcome = OutcomeType, outcome_subtype = OutcomeSubtype, 
+         animal_type = AnimalType, sex = SexuponOutcome, 
+         age = AgeuponOutcome, breed = Breed, color = Color) %>%
+  relocate(outcome, .after = "animal_id")
+
+# take a small sample of it for computation's sake
+df_small <- df %>% 
+  slice_sample(n = 1000)
+
+age_to_years_numeric <- function(age_char) {
+  case_when(
+    # if measured in years
+    str_detect(age_char, pattern = "year") ~ as.double(str_extract(age_char, pattern= "\\d+")),
+    # if measured in months
+    str_detect(age_char, pattern = "month") ~ as.double(str_extract(age_char, pattern = "\\d+")) / 12,
+    # if measured in weeks
+    str_detect(age_char, pattern = "week") ~ as.double(str_extract(age_char, pattern = "\\d+")) / 52.1429,
+    # if measured in days
+    str_detect(age_char, pattern = "day") ~ as.double(str_extract(age_char, pattern = "\\d+")) / 365
+  )
+}
+
+
+collapse_colors <- function(colors_fac) {
+  colors_vec <- as.character(colors_fac)
+  
+  case_when(
+    str_detect(colors_vec, pattern = "Tabby") ~ "Tabby",
+    str_detect(colors_vec, pattern = "Point") ~ "Point",
+    str_detect(colors_vec, pattern = "Brindle") ~ "Brindle",
+    str_detect(colors_vec, pattern = "Calico") ~ "Calico",
+    str_detect(colors_vec, pattern = "Merle") ~ "Merle",
+    str_detect(colors_vec, pattern = "Tricolor") ~ "Tricolor",
+    str_detect(colors_vec, pattern = "Sable") ~ "Sable",
+    str_detect(colors_vec, pattern = "Blue Tick") |  str_detect(colors_vec, pattern = "Blue Cream") ~ "Blue",
+    str_detect(colors_vec, pattern = "Black Smoke") ~ "Black",
+    str_detect(colors_vec, pattern = "/") ~ "Multiple colors",
+    str_detect(colors_vec, pattern = "Tortie") | str_detect(colors_vec, pattern = "Torbie") ~ "Tortie/Torbie",
+    TRUE ~ colors_vec
+  )
+}
+
+# final preprocessing recipe
+preproc_rec <- recipe(outcome ~ ., data = df_small) %>%
+  # set 'animal_id' as the identifier variable, not to be used in prediction
+  update_role(animal_id, new_role = "id") %>%
+  # data preprocessing
+  step_mutate(
+    # convert age to numeric
+    age = age_to_years_numeric(age),
+    # add month variable (as a factor)
+    outcome_month = factor(month(outcome_datetime)),
+    # add year variable (as a factor)
+    outcome_year = factor(year(outcome_datetime)),
+    # reduce number of unique animal colors
+    color = factor(collapse_colors(color))
+    ) %>%
+  # add indicator variable for if date is a holiday
+  step_holiday(outcome_datetime,
+               holidays = c("ChristmasEve", "NewYearsDay", "USChristmasDay",
+                            "USThanksgivingDay")) %>%
+  # remove columns that are no longer useful
+  step_rm(outcome_datetime, breed, animal_name, outcome_subtype)
+
+# fit recipe to training data
+preproc_prepped <- preproc_rec %>% prep(df)
+
+# apply recipe to training data
+preproc_train <- preproc_prepped %>% bake(df)
+
+# apply recipe to test data
+preproc_test <- preproc_prepped %>% bake(test_df) %>%
+  mutate(animal_id = as.character(1:nrow(test_df)))
+
+# define directory that will hold preprocessed data
+preproc_dir <- dir %>%
+  paste0("/preprocessed_data")
+
+# write preprocessed training data to csv
+preproc_train %>%
+  write_csv(paste0(preproc_dir, "/train_preprocessed.csv"))
+
+# write preprocessed testing data to csv
+preproc_test %>%
+  write_csv(paste0(preproc_dir, "/test_preprocessed.csv"))
+```
+
+<br>
+
+## Modeling
+
+<br>
+
+### Setup
+
+```{r dirs, include = FALSE}
+# define working directory
+dir <- getwd()
+
+# directory where preprocessed data is held
+preproc_dir <- dir %>%
+  paste0("/preprocessed_data")
+```
+
+<br>
+
+In order to begin the modeling process, I first read in the preprocessed data, once again using a small sample in order to make computations easier. The code for this can be seen below. 
+
+<br>
+
+```{r make train small and cvs, message = FALSE, warning = FALSE}
+# read in preprocessed training data
+train_small <- preproc_dir %>%
+  paste0("/train_preprocessed.csv") %>%
+  read_csv() %>%
+  mutate(
+    animal_type = factor(animal_type),
+    sex = factor(sex),
+    color = factor(color),
+    outcome = factor(outcome),
+    outcome_month = factor(outcome_month),
+    outcome_year = factor(outcome_year),
+    mix = factor(mix)
+  ) %>%
+  slice_sample(n = 2000)
+
+# create 5 cross-validation folds
+train_cv <- vfold_cv(train_small, v = 5, strata = outcome)
+```
+
+<br>
+
+Next, I wrote a recipe to prepare the data for fitting. The only numeric variable, age, was normalized for the sake of simplicity, and also because normalization is important in some models such as neural networks. Later in the modeling process, I ran into problems where certain variables had a variance of 0 within a outcome group. To attempt to combat this, I added a step in the recipe that drops variables with zero or near-zero variance. Finally, all factor variables were converted to indicator variables, since most models only take in numeric data. 
+
+<br>
+
+```{r define proc rec}
+animal_rec <- recipe(outcome ~ ., data = train_small) %>%
+  update_role(animal_id, new_role = "ID") %>%
+  # fill missing categorical values based on mode
+  step_impute_mode(all_nominal_predictors()) %>%
+  # fill missing numeric values based on median
+  step_impute_median(age) %>%
+  # normalize the age variable
+  step_normalize(age) %>%
+  # remove variables that have zero or near-zero variance
+  step_nzv(mix) %>%
+  # convert factor variables to dummy variables
+  step_dummy(all_nominal_predictors())
+```
+
+```{r apply proc rec, include = FALSE, warning = FALSE, message = FALSE}
+animal_trained <- animal_rec %>% prep(train_small)
+train_proc <- animal_trained %>% bake(train_small)
+```
+
+### Specifying Models
+
+```{r define model specs, include = FALSE}
+boosted_tree <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+bag_dtree <- bag_tree() %>%
+  set_engine("rpart", times = 3) %>%
+  set_mode("classification")
+
+dtree <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+mlperceptron <- mlp() %>%
+  set_engine("keras") %>%
+  set_mode("classification")
+
+knn <- nearest_neighbor() %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+
+random_forest <- rand_forest() %>%
+  set_engine("randomForest") %>%
+  set_mode("classification")
+
+svm <- svm_poly() %>%
+  set_engine("kernlab") %>%
+  set_mode("classification")
+
+svm_radial <- svm_rbf() %>%
+  set_engine("kernlab") %>%
+  set_mode("classification")
+
+c5_rules <- C5_rules() %>%
+  set_engine("C5.0") %>%
+  set_mode("classification")
+
+flexible_lda <- discrim_flexible() %>%
+  set_engine("earth") %>%
+  set_mode("classification")
+
+mlr <- multinom_reg() %>%
+  set_engine("keras") %>%
+  set_mode("classification")
+
+nbclassifier <- naive_Bayes() %>%
+  set_engine("klaR") %>%
+  set_mode("classification")
+
+ensemble_specs <- list(bag_dtree, random_forest, boosted_tree)
+ensemble_names <- c("bagged decision tree", "random forest", "boosted tree")
+
+basic_specs <- list(knn, flexible_lda)
+basic_names <- c("KNN", "flexible LDA")
+
+rule_specs <- list(dtree, c5_rules)
+rule_names <- c("decision tree", "C5.0 rules")
+
+svm_specs <- list(svm, svm_radial)
+svm_names <- c("SVM", "SVM w/ RBF kernel")
+
+other_specs <- list(mlr, nbclassifier, mlperceptron)
+other_names <- c("multinomial regression", "naive bayes", "MLP")
+
+model_spec_df <- tibble(
+  category = c("basic", "ensemble", "rule-based", "svm", "other"),
+  `Number of models` = c(length(basic_names),
+                 length(ensemble_names),
+                 length(rule_names),
+                 length(svm_names),
+                 length(other_names)
+                 ),
+  models = c(paste0(basic_names, collapse = ", "),
+             paste0(ensemble_names, collapse = ", "),
+             paste0(rule_names, collapse = ", "),
+             paste0(svm_names, collapse = ", "),
+             paste0(other_names, collapse = ", ")
+             )
+)
+```
+
+<br>
+
+To begin the modeling process, I first wanted to get some baseline results. So, I tried 12 different classification models that can handle more than two classes, which I grouped into the categories shown in Table 1 below. 
+
+<br>
+
+**Table 1**
+```{r print model spec df, echo = FALSE}
+knitr::kable(model_spec_df)
+```
+
+### Getting Baseline Cross-Validated Results
+
+<br>
+
+Next, I evaluated all 12 models based on 5-fold cross-validated accuracy and ROC-AUC. The results are shown in Figure 8 below. 
+
+<br>
+
+```{r fitting functions, include = FALSE}
+# functions for model fitting and extracting results
+spec_to_fitted_cv <- function(model_spec, rec, cvs) {
+  workflow() %>%
+    add_recipe(animal_rec) %>%
+    add_model(model_spec) %>%
+    fit_resamples(train_cv)
+}
+
+gather_cv_results <- function(cv_fitted_wflow, model_name) {
+  cv_fitted_wflow %>% 
+    collect_metrics() %>%
+    add_column(model_name = model_name, .before = ".metric") %>%
+    dplyr::select(model_name, metric = .metric, cv_value = mean)
+}
+```
+
+```{r fit baseline models, warning = FALSE, message = FALSE, include = FALSE, eval = FALSE}
+# basic models
+basic_cv_fitted_models <- basic_specs %>%
+  purrr::map(~spec_to_fitted_cv(.x, animal_rec, train_cv))
+
+basic_cv_results <- map2_df(basic_cv_fitted_models, basic_names,
+        ~gather_cv_results(.x, .y)
+        )
+
+
+ensemble_cv_fitted_models <- ensemble_specs %>%
+  purrr::map(~spec_to_fitted_cv(.x, animal_rec, train_cv))
+
+ensemble_cv_results <- map2_df(ensemble_cv_fitted_models, ensemble_names,
+        ~gather_cv_results(.x, .y)
+        )
+
+rule_cv_fitted_models <- rule_specs %>%
+  purrr::map(~spec_to_fitted_cv(.x, animal_rec, train_cv))
+
+rule_cv_results <- map2_df(rule_cv_fitted_models, rule_names,
+        ~gather_cv_results(.x, .y)
+        )
+
+svm_cv_fitted_models <- svm_specs %>%
+  purrr::map(~spec_to_fitted_cv(.x, animal_rec, train_cv))
+
+svm_cv_results <- map2_df(svm_cv_fitted_models, svm_names,
+        ~gather_cv_results(.x, .y)
+        )
+
+other_cv_fitted_models <- other_specs %>%
+  purrr::map(~spec_to_fitted_cv(.x, animal_rec, train_cv))
+
+other_cv_results <- map2_df(other_cv_fitted_models, other_names,
+        ~gather_cv_results(.x, .y)
+        )
+
+baseline_model_results <- rbind(basic_cv_results, ensemble_cv_results, rule_cv_results, svm_cv_results, other_cv_results)
+```
+
+```{r, warning = FALSE, message = FALSE, include = FALSE}
+baseline_cv_results_dir <- dir %>%
+  paste0("/baseline_cv_results")
+
+baseline_model_results <- readRDS(paste0(baseline_cv_results_dir, "/result_table.rds"))
+```
+
+
+```{r plot baseline results, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10}
+asc_rocauc_order <- baseline_model_results %>%
+  filter(metric == "roc_auc") %>% 
+  arrange(cv_value) %>% 
+  pull(model_name)
+
+baseline_model_results %>%
+  mutate(model_name = factor(model_name, levels = asc_rocauc_order)) %>%
+  ggplot(aes(x = model_name, y = cv_value, fill = metric)) + 
+  geom_col(position = "dodge") + 
+  coord_flip() + 
+  labs(x = "", y = "Cross-validated Value",
+       title = "Figure 8: Comparing Cross-validated Metrics of 12 Classification Models",
+       subtitle = "Note: no hyperparameters have been tuned")
+```
+
+Overall, the baseline model accuracies were relatively low. The best accuracy was achieved by the flexible linear discriminant analysis model, but was only 63.4%. However, this is substantially better than randomly guessing, which would result in an accuracy of 20% because there are five outcomes. The decision tree, boosted tree, and random forest were next best in terms of ROC-AUC, and had near-identical ROC-AUC and accuracy. I decided to move forward with these 4 models, since they had the highest ROC-AUC. I made my decision based on ROC-AUC because it gives a good overall estimate of how well the classifier is doing, aggregated over all five outcomes. 
+
+The next step was to optimize the chosen models, tuning their hyperparameters to maximize ROC-AUC. 
+
+<br>
+
+### Tuning Chosen Models
+
+The code for tuning all four models is shown below:
+
+<br>
+
+**Flexible LDA:**
+
+<br>
+
+```{r tune lda, warning = FALSE, message = FALSE, eval = FALSE}
+# Notes:
+
+  # Wasn't able to tune `num_terms` because using anything less than all 58 columns results in matrix singularity issues. 
+
+  # All pruning methods except "backward" and "none" were incompatible with anything but binary classification
+
+# define tuning spec
+lda_flex_tune <- discrim_flexible(prod_degree = tune(),
+                                  prune_method = tune()) %>%
+  set_engine("earth") %>% 
+  set_mode("classification")
+
+# add to workflow
+lda_tune_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(lda_flex_tune)
+
+# manually define hyperparameter space
+lda_tune_grid <- expand.grid(prod_degree = c(1, 2), prune_method = c("backward", "none"))
+
+# tune model
+lda_tune_gs <- tune_grid(
+  lda_tune_wflow,
+  resamples = train_cv,
+  grid = lda_tune_grid
+)
+
+# extract combination that maximizes ROC-AUC
+best_lda_attrs <- lda_tune_gs %>% 
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  slice_max(mean) %>%
+  slice_tail()
+
+# value = 1
+best_prod_degree <- best_lda_attrs %>% 
+  pull(prod_degree)
+
+# value = "backward"
+best_prune_method <- best_lda_attrs %>%
+  pull(prune_method)
+
+
+# define tuned model
+best_lda_flex_spec <- discrim_flexible(prod_degree = best_prod_degree,
+                                       prune_method = best_prune_method) %>%
+  set_engine("earth") %>% 
+  set_mode("classification")
+
+# add to workflow
+best_lda_flex_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(best_lda_flex_spec)
+```
+
+<br>
+
+**Decision Tree**
+
+<br>
+
+```{r tune dtree, warning = FALSE, message = FALSE, eval = FALSE}
+# define tuning spec
+dtree_tune <- decision_tree(cost_complexity = tune(),
+                            tree_depth = tune(),
+                            min_n = tune()) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+# add to workflow
+dtree_tune_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(dtree_tune)
+
+# define hyperparameter space
+dtree_tune_grid <- grid_regular(cost_complexity(),
+                                tree_depth(),
+                                min_n(),
+                                levels = 3)
+
+# tune model
+dtree_tune_gs <- tune_grid(
+  dtree_tune_wflow,
+  resamples = train_cv,
+  grid = dtree_tune_grid
+)
+
+# extract combination that maximizes ROC-AUC
+best_dtree_attrs <- dtree_tune_gs %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  slice_max(mean) %>%
+  slice_tail()
+
+# value = 3.162278e-06
+best_cost_complexity <- best_dtree_attrs %>%
+  pull(cost_complexity)
+
+# value = 8
+best_tree_depth <- best_dtree_attrs %>%
+  pull(tree_depth)
+
+# value = 40
+best_min_n <- best_dtree_attrs %>%
+  pull(min_n)
+
+# define tuned model
+best_dtree_spec <- decision_tree(cost_complexity = best_cost_complexity,
+                            tree_depth = best_tree_depth,
+                            min_n = best_min_n) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+# add to workflow
+best_dtree_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(best_dtree_spec)
+```
+
+<br>
+
+**Boosted Tree**
+
+Tuning individual tree parameters:
+
+<br>
+
+```{r tune bt1, warning = FALSE, message = FALSE, eval = FALSE}
+# define tuning spec
+btree_tune1 <- boost_tree(mtry = tune(),
+                          min_n = tune(),
+                          tree_depth = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# add to workflow
+btree_tune1_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(btree_tune1)
+
+# define hyperparameter space
+btree_tune1_grid <- grid_regular(mtry(c(1, ncol(train_proc))),
+                                 min_n(),
+                                 tree_depth(),
+                                 levels = 3
+                                 )
+
+# tune model
+btree_tune1_gs <- tune_grid(
+  btree_tune1_wflow,
+  resamples = train_cv,
+  grid = btree_tune1_grid
+)
+
+# extract combination that maximizes ROC-AUC
+best_btree_tune1 <- btree_tune1_gs %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  slice_max(mean) %>%
+  slice_tail()
+
+# value = 58
+best_mtry <- best_btree_tune1 %>%
+  pull(mtry)
+
+# value = 2
+best_min_n <- best_btree_tune1 %>%
+  pull(min_n)
+
+# value = 8
+best_tree_depth <- best_btree_tune1 %>%
+  pull(tree_depth)
+```
+
+<br>
+
+Tuning boosting parameters:
+
+<br>
+
+```{r tune bt2, warning = FALSE, message = FALSE, eval = FALSE}
+# define tuning spec, inputting previously tuned hyperparameters
+btree_tune2 <- boost_tree(mtry = best_mtry,
+                          min_n = best_min_n,
+                          tree_depth = best_tree_depth,
+                          trees = tune(),
+                          learn_rate = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# add to workflow
+btree_tune2_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(btree_tune2)
+
+# define remaining hyperparameter space
+btree_tune2_grid <- grid_regular(trees(),
+                                 learn_rate(),
+                                 levels = 2
+                                 )
+
+# tune model
+btree_tune2_gs <- tune_grid(
+  btree_tune2_wflow,
+  resamples = train_cv,
+  grid = btree_tune2_grid
+)
+
+# extract combination that maximizes ROC-AUC
+best_btree_tune2 <- btree_tune2_gs %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  slice_max(mean) %>%
+  slice_tail()
+
+# value = 2000 
+best_num_trees <- best_btree_tune2 %>%
+  pull(trees)
+
+# value = 0.1
+best_learn_rate <- best_btree_tune2 %>%
+  pull(learn_rate)
+
+# define tuned model
+best_btree_spec <- boost_tree(mtry = best_mtry,
+                              min_n = best_min_n,
+                              tree_depth = best_tree_depth,
+                              trees = best_num_trees,
+                              learn_rate = best_learn_rate) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+  
+# add to workflow
+best_btree_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(best_btree_spec)
+```
+
+<br>
+
+**Random Forest**
+
+<br>
+
+```{r tune rf, warning = FALSE, message = FALSE, eval = FALSE}
+rforest_tune <- rand_forest(mtry = tune(),
+                            trees = tune(),
+                            min_n = tune()) %>%
+  set_engine("randomForest") %>%
+  set_mode("classification")
+
+rforest_tune_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(rforest_tune)
+
+rforest_tune_grid <- grid_regular(mtry(c(1, ncol(train_proc) - 2)),
+                              dials::trees(),
+                              min_n(),
+                              levels = 2
+                              )
+
+rforest_tune_gs <- tune_grid(
+  rforest_tune_wflow,
+  resamples = train_cv,
+  grid = rforest_tune_grid
+)
+
+best_rforest_attrs <- rforest_tune_gs %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  slice_max(mean) %>%
+  slice_tail()
+
+# value = 58
+best_mtry <- best_rforest_attrs %>%
+  pull(mtry) %>%
+  subtract(2)
+
+# value = 2000
+best_trees <- best_rforest_attrs %>%
+  pull(trees)
+
+# value = 40
+best_min_n <- best_rforest_attrs %>%
+  pull(min_n)
+
+best_rforest_spec <- rand_forest(mtry = best_mtry,
+                                 trees = best_trees,
+                                 min_n = best_min_n) %>%
+  set_engine("randomForest") %>%
+  set_mode("classification")
+
+best_rforest_wflow <- workflow() %>%
+  add_recipe(animal_rec) %>%
+  add_model(best_rforest_spec)
+```
+
+<br>
+
+### Comparing Tuned Models
+
+Once all models had been adequately tuned, I compared them based on ROC-AUC, accuracy, precision, recall, and F1 score. The comparison is visualized in Figure 9 below. 
+
+```{r compare tuned models, echo = FALSE, message = FALSE, warning = FALSE, fig.width = 10}
+tuned_cv_results_dir <- dir %>%
+  paste0("/tuned_cv_results")
+
+tuned_cv_results <- readRDS(paste0(tuned_cv_results_dir, "/tuned_results_table.rds"))
+
+asc_f1_order <- tuned_cv_results %>%
+  filter(metric == "f_meas") %>% 
+  arrange(cv_value) %>% 
+  pull(model_name)
+
+tuned_cv_results %>%
+  mutate(model_name = factor(model_name, levels = asc_f1_order)) %>%
+  ggplot(aes(x = model_name, y = cv_value, fill = metric)) + 
+  geom_col(position = "dodge") + 
+  coord_flip() + 
+  labs(x = "", y = "Cross-validated Value",
+       title = "Figure 9: Comparing Cross-validated Metrics of 4 Classification Models",
+       subtitle = "Plotted in order of F1 score (highest to lowest)")
+```
+
+<br>
+
+For choosing my final model, I chose F1 score as the criteria. Because the five outcomes are so unbalanced (see Figure 1, 75% of pets are either adopted or transferred), using accuracy would not be valid, since a model could theoretically achieve 75% accuracy be guessing only 'Adoption' or 'Transfer', ignoring all other outcomes. F1 score is the harmonic mean of precision and recall, so it provides a great measure of the model's performance, and is aggregated across all five outcomes. The model with the highest F1 score was the boosted tree. 
+
+One interesting note is that all models had noticeably higher precision than recall. This means that within each outcome, the number of true positives over the number of positive guesses was higher than the number of true positives over the number of positives that were actually in the data. 
+
+A confusion matrix for the boosted tree model is shown in Table 2 below. 
+
+**Table 2**
+
+```{r fit to all data, include = FALSE, message = FALSE, warning = FALSE}
+train <- preproc_dir %>%
+  paste0("/train_preprocessed.csv") %>%
+  read_csv() %>%
+  mutate(
+    animal_type = factor(animal_type),
+    sex = factor(sex),
+    color = factor(color),
+    outcome = factor(outcome),
+    outcome_month = factor(outcome_month),
+    outcome_year = factor(outcome_year),
+    mix = factor(mix)
+  )
+
+test <- preproc_dir %>%
+  paste0("/test_preprocessed.csv") %>%
+  read_csv() %>%
+  mutate(
+    animal_id = as.character(animal_id),
+    animal_type = factor(animal_type),
+    sex = factor(sex),
+    color = factor(color),
+    outcome_month = factor(outcome_month),
+    outcome_year = factor(outcome_year),
+    mix = factor(mix)
+  )
+
+best_btree_spec <- boost_tree(mtry = 58,
+                   min_n = 21,
+                   tree_depth = 15,
+                   trees = 50,
+                   learn_rate = 0.1) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+animal_rec2 <- recipe(outcome ~ ., data = train) %>%
+  update_role(animal_id, new_role = "ID") %>%
+  # fill missing categorical values based on mode
+  step_impute_mode(all_nominal_predictors()) %>%
+  # fill missing numeric values based on median
+  step_impute_median(age) %>%
+  # normalize the age variable
+  step_normalize(age) %>%
+  # remove variables that have zero or near-zero variance
+  step_nzv(mix) %>%
+  # convert factor variables to dummy variables
+  step_dummy(all_nominal_predictors())
+
+best_btree_wflow <- workflow() %>%
+  add_recipe(animal_rec2) %>%
+  add_model(best_btree_spec)
+
+final_fit <- best_btree_wflow %>%
+  fit(train)
+```
+
+
+```{r confusion matrix, message = FALSE, warning = FALSE, echo = FALSE}
+train %>%
+  add_column(preds = final_fit %>% predict(new_data = train, type = "class") %>% pull(.pred_class),
+             .after = "outcome") %>%
+  conf_mat(truth = outcome, 
+           estimate = preds)
+```
+
+Table 2 shows that the boosted tree did not actually predict that any pets died. This is most likely because only 0.75% of the pets in the training data actually died, so there was not much information unique to those pets, compared to pets that experienced other outcomes. Another way to think about it is that if the model decides never to guess 'Died' as an outcome, the only consequence is potentially a 0.75% decrease in training accuracy. 
+
+### Formatting and Outputting Results
+
+Finally, the chosen model was fit the the entirity of the training data:
+
+<br>
+
+```{r not run fit all data, eval = FALSE}
+final_fit <- best_btree_wflow %>%
+  fit(train)
+```
+
+
+<br>
+
+The submission requested that the class probabilities be reported for each pet, which required some data manipulation, shown below 
+
+<br>
+
+
+```{r create submission, warning = FALSE, message = FALSE}
+# define directory that holds submission files
+submission_dir <- dir %>%
+  paste0("/submissions")
+
+submission <- final_fit %>%
+  predict(new_data = test, type = "prob") %>%
+  rename_with(~str_remove(.x, pattern = ".pred_")) %>%
+  add_column(ID = 1:nrow(test), .before = "Adoption")
+
+# write submission to csv
+submission %>%
+  write_csv(file = paste0(submission_dir, "/submission2.csv"))
+
+# print out some of the submission file
+submission %>% 
+  head() %>%
+  knitr::kable()
+```
+
+### Submitting Results
+
+After getting the submission in the proper format, I submitted my results to Kaggle. 
+
+The competition was scored using multi-class logarithmic loss, which is calculated according to the following formula: 
+
+![](criteria.JPG)
+ 
+ According to the competition page: 
+ 
+"$N$ is the number of animals in the test set, $M$ is the number of outcomes, $log$ is the natural logarithm, $y_{ij}$ is 1 if observation $i$ is in outcome $j$ and 0 otherwise, and $p_{ij}$ is the predicted probability that observation $i$ belongs to outcome $j$."
+
+As you can see below, I achieved a score of 0.88103. The best score achieved was 0.34093.
+
+![](verification.JPG)
+
