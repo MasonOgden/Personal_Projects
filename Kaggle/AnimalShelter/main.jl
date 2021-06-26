@@ -469,7 +469,7 @@ plot(
 #---------------------------------------------------------#
 
 #%% AdaBoost
-  #---------------------------------------------------------#
+#---------------------------------------------------------#
 ada = (@load AdaBoostClassifier pkg = ScikitLearn verbosity = 0)()
 	
 n_estimators_range = range(ada, :n_estimators, lower = 25, upper = 200)

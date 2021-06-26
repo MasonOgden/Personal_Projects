@@ -4,7 +4,6 @@ using Impute: srs
 using MLJ
 using StatsPlots: @df
 using Chain: @chain
-using Pipe: @pipe
 
 #%% Reading and Cleaning Data
 
@@ -102,24 +101,9 @@ function finalize_types(dataset)
     end
 end
 
-order_qual(cat_vector) = levels!(cat_vector, ["Po", "Fa", "TA", "Gd", "Ex"])
 
-function reorder_levels(dataset)
-    qual_cond_vars = [:ExterQual, :ExterCond, :BsmtQual, :BsmtCond, :HeatingQC, :KitchenQual, :GarageQual, :GarageCond]
-
-    @chain dataset begin
-        select(
-            Symbol.(names(dataset)),
-            :LotShape => (x -> levels!(x, ["Reg", "IR1", "IR2", "IR3"])) => :LotShape,
-            :LandSlope => (x -> levels!(x, ["Gtl", "Mod", "Sev"])) => :LandSlope,
-            :BsmtExposure => (x -> levels!(x, ["No", "Mn", "Av", "Gd"])) => :BsmtExposure,
-            :Functional => (x -> levels!(x, ["Sal", "Sev", "Maj2", "Maj1", "Mod", "Min2", "Min1", "Typ"])) => :Functionality,
-            qual_cond_vars .=> order_qual .=> qual_cond_vars
-        )
-    end
-end
-
-clean_data = reorder_levels ∘ finalize_types ∘ fix_lot_frontage ∘ dichotomize_some_features ∘ fix_dtypes ∘ drop_unnecessary_features
+#clean_data = set_factor_levels ∘ finalize_types ∘ fix_lot_frontage ∘ dichotomize_some_features ∘ fix_dtypes ∘ drop_unnecessary_features
+clean_data = finalize_types ∘ fix_lot_frontage ∘ dichotomize_some_features ∘ fix_dtypes ∘ drop_unnecessary_features
 
 dataset_dir = "datasets"
 
@@ -157,11 +141,7 @@ function preprocess(dataset)
     end
 end
 
-X = @chain train begin
-    select(Not(:SalePrice))
-    preprocess
-end
-y = float.(train[!, :SalePrice])
+#%% Baseline Modeling Results
 
 # reg_pipelines = [
 #     (@load ARDRegressor pkg = ScikitLearn verbosity = 0)(),
@@ -192,118 +172,187 @@ reg_model_names = [
     "Ridge",
     "SVM"
 ]
-reg_pipelines = [
+
+ready_data(dataframe) = @chain dataframe srs finalize_types coerce(:SalePrice => Continuous) match_factor_levels(train)
+
+reg_model_pipelines = [
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load ARDRegressor pkg = ScikitLearn verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load AdaBoostRegressor pkg = ScikitLearn verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load BaggingRegressor pkg = ScikitLearn verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load DecisionTreeRegressor pkg = DecisionTree verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load ElasticNetRegressor pkg = MLJLinearModels verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load EpsilonSVR pkg = LIBSVM verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load ExtraTreesRegressor pkg = ScikitLearn verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load GradientBoostingRegressor pkg = ScikitLearn verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load KNeighborsRegressor pkg = ScikitLearn verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load RandomForestRegressor pkg = DecisionTree verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load RidgeRegressor pkg = MLJLinearModels verbosity = 0)()
-        ),
+    ),
     @pipeline(
-            X -> srs(X),
-            X -> coerce(X, :SalePrice => Continuous),
-            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # get data ready for modeling
+            X -> ready_data(X),
+            # Standardize numeric variables
             Standardizer(count = true),
+            # Dummify categorical variables
+            OneHotEncoder(ordered_factor = false, drop_last = true),
+            # load into model
             (@load SVMRegressor pkg = ScikitLearn verbosity = 0)()
-        )
+    )
 ]
 
-evaluate(reg_pipelines[2], X, y, resampling=CV(shuffle=true, nfolds=5), verbosity=0)
+function match_factor_levels(dataset, full_data)
+    # Don't fix PoolQC, MiscFeature, Alley, or Fence
 
-baseline_results = @chain DataFrame(
-	model_name = reg_model_names,
-	cv_acc = [MLJ.evaluate(reg, MLJ.table(Matrix(X)), y, resampling=CV(shuffle=true, nfolds=5),
-					   verbosity=0).measurement[1]
-			  for reg ∈ reg_pipelines]
-) begin
-    sort(_, :cv_acc, rev = true) 
+    # first, get names of categorical variables (minus BsmtCond and MSSubClass since those are special cases)
+    cat_vars = @chain dataset begin
+        dtype_info
+        filter(x -> x.dtype ∈ [CategoricalValue{String, UInt32}, Union{Missing, CategoricalValue{String, UInt32}}] && x.col ∉ ["BsmtCond", "MSSubClass"], _)
+        _[!, :col]
+        Symbol.(_)
+    end
+
+    # fix BsmtCond and MSSubClass levels
+    out_df = @chain dataset begin
+        select(
+            Symbol.(names(dataset)),
+            :BsmtCond => (x -> levels!(x, ["Po", "Fa", "TA", "Gd", "Ex"])) => :BsmtCond,
+            :MSSubClass => (x -> levels!(x, ["20", "30", "40", "45", "50", "60", "70", "75", "80", "85", "90", "120", "150", "160", "180", "190"])) => :MSSubClass
+        )
+    end
+
+    # for every categorical variable
+    for varname ∈ cat_vars
+        levels!(out_df[!, varname], levels(full_data[!, varname]))
+    end
+
+    return out_df
 end
 
-eltype.(eachcol(train)) |> unique
+X_train = @chain train select(Not(:SalePrice))
 
-num_vars = @chain train begin
-    srs
-    finalize_types
-    dtype_info
-    filter(x -> x.dtype ∈ [Int64, Float64], _)
-    _[!, :col]
-    Symbol.(_)
-end
+y_train = float.(train[!, :SalePrice])
 
-train_ready = @chain train begin
-    srs
-    finalize_types
-end
+baseline_results = DataFrame(
+    model = reg_model_names,
+    cv_rmse = [
+        evaluate(reg, X_train, y_train, resampling=CV(shuffle=true, nfolds=5), verbosity=0).measurement[1]
+        for reg ∈ reg_model_pipelines
+    ]
+)
 
-# figure out which numeric varialbes have tiny variance, maybe drop them
+baseline_results = @chain baseline_results sort(_, :cv_rmse)
+
+@df baseline_results bar(
+	:model,
+	:cv_rmse,
+	orientation = :h,
+	yflip = true,
+	legend = false,
+	xlabel = "Cross-Validated RMSE",
+	title = "Comparing Baseline Models"
+)
+
+# models I will tune: 
+    # 1. GradientBoostingRegressor
+    # 2. ExtraTrees
+    # 3. BaggingRegressor
+    # 4. RandomForestRegressor
+    # 5. ARD
