@@ -1,109 +1,14 @@
-#%% Packages
-using CSV, DataFrames, Statistics, Plots
-using Impute: srs
-using MLJ
+#%% Packages and functions
+using CSV, DataFrames, Statistics, Plots, MLJ
+import Impute
 using StatsPlots: @df
 using Chain: @chain
 
+code_folder = "source"
+
+include(joinpath(code_folder, "functions.jl"))
+
 #%% Reading and Cleaning Data
-
-dtype_info(dataframe) =
-    DataFrame(col = names(dataframe), dtype = eltype.(eachcol(dataframe)))
-
-has_value(value) = ismissing(value) ? 0.0 : 1.0
-
-parse_int(value) = ismissing(value) ? missing : parse(Int64, value)
-
-# convert "NA" string values to missings
-function fix_na(input_vec)
-    input_type = eltype(input_vec)
-    vector = convert(Vector{Union{Missing,input_type}}, input_vec)
-    vector[vector.=="NA"] .= missing
-    return vector
-end
-
-function drop_unnecessary_features(dataset)
-    @chain dataset select(Not([:Id, :FireplaceQu]))
-end
-
-# first fix NAs, then convert some to numeric, make factors categorical
-function fix_dtypes(dataset)
-    should_be_numeric = [:MasVnrArea, :LotFrontage, :GarageYrBlt]
-    should_be_factor = [:MSSubClass, :MoSold, :YrSold]
-
-    out_df = @chain dataset begin
-        # replace "NA" String values with missing
-        mapcols(fix_na, _)
-        select(
-            Symbol.(names(dataset)),
-            # convert string cols that should be numeric
-            should_be_numeric .=> (x -> parse_int.(x)) .=> should_be_numeric,
-            # convert int cols that should be categorical
-            should_be_factor .=> (x -> string.(x)) .=> should_be_factor,
-        )
-    end
-
-    # get names of all categorical columns
-    cat_vars = @chain out_df begin
-        dtype_info
-        filter(x -> x.dtype ∈ [String, Union{Missing,String}], _)
-        _[!, :col]
-        Symbol.(_)
-    end
-
-    # convert all String columns to categorical
-    @chain out_df begin
-        select(Symbol.(names(out_df)), cat_vars .=> categorical .=> cat_vars)
-    end
-end
-
-# dichotomizes the 5 features with the most missing values
-function dichotomize_some_features(dataset)
-    @chain dataset begin
-        select(
-            Not([:PoolQC, :MiscFeature, :Alley, :Fence]),
-            :PoolQC => (x -> has_value.(x)) => :HasPool,
-            :MiscFeature => (x -> has_value.(x)) => :HasMiscFeature,
-            :Alley => (x -> has_value.(x)) => :HasAlley,
-            :Fence => (x -> has_value.(x)) => :HasFence,
-        )
-    end
-end
-
-function fix_lot_frontage(dataset)
-    @chain dataset begin
-        select(
-            Symbol.(names(dataset)),
-            # replace missings with 0.0
-            :LotFrontage => (x -> coalesce.(x, 0)) => :LotFrontage,
-        )
-    end
-end
-
-function remove_missing_union(col_vector)
-    if (eltype(col_vector) == Union{Missing,CategoricalValue{String,UInt32}}) &&
-       sum(ismissing.(col_vector)) == 0
-        convert(CategoricalArray, string.(col_vector))
-    elseif eltype(col_vector) == Union{Missing,Int64} && sum(ismissing.(col_vector)) == 0
-        convert.(Int64, col_vector)
-    else
-        col_vector
-    end
-end
-
-function finalize_types(dataset)
-    all_cols = Symbol.(names(dataset))
-
-    @chain dataset begin
-        select(all_cols .=> remove_missing_union .=> all_cols)
-    end
-end
-
-
-#clean_data = set_factor_levels ∘ finalize_types ∘ fix_lot_frontage ∘ dichotomize_some_features ∘ fix_dtypes ∘ drop_unnecessary_features
-clean_data =
-    finalize_types ∘ fix_lot_frontage ∘ dichotomize_some_features ∘ fix_dtypes ∘
-    drop_unnecessary_features
 
 dataset_dir = "datasets"
 
@@ -112,30 +17,7 @@ test = joinpath(dataset_dir, "test.csv") |> CSV.File |> DataFrame |> clean_data
 
 train |> schema
 
-#%% Data Preprocessing
-
-function preprocess(dataset)
-    #ordered_cat_vars = [:LotShape, :LandSlope, :BsmtExposure, :Functional,
-    #:ExterQual, :ExterCond, :BsmtQual, :BsmtCond,
-    #:HeatingQC, :KitchenQual, :GarageQual, :GarageCond]
-
-    dataset_ready = @chain dataset srs finalize_types
-
-    cat_encoder = @chain OneHotEncoder(ordered_factor = false, drop_last = true) begin
-        machine(dataset_ready)
-        MLJ.fit!
-    end
-
-    standardizer = @chain Standardizer(count = true) begin
-        machine(dataset_ready)
-        MLJ.fit!
-    end
-
-    @chain dataset_ready begin
-        MLJ.transform(standardizer, _)
-        MLJ.transform(cat_encoder, _)
-    end
-end
+#%% Defining Model Pipelines
 
 reg_model_names = [
     "ARD",
@@ -152,15 +34,10 @@ reg_model_names = [
     "SVM",
 ]
 
-ready_data(dataframe) =
-    @chain dataframe srs finalize_types coerce(:SalePrice => Continuous) match_factor_levels(
-        train,
-    )
-
 reg_model_pipelines = [
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -170,7 +47,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -180,7 +57,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -190,7 +67,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -200,7 +77,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -210,7 +87,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -220,7 +97,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -230,7 +107,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -240,7 +117,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -250,7 +127,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -260,7 +137,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -270,7 +147,7 @@ reg_model_pipelines = [
     ),
     @pipeline(
         # get data ready for modeling
-        X -> ready_data(X),
+        X -> ready_data(X, train),
         # Standardize numeric variables
         Standardizer(count = true),
         # Dummify categorical variables
@@ -280,63 +157,7 @@ reg_model_pipelines = [
     )
 ]
 
-function match_factor_levels(dataset, full_data)
-    # Don't fix PoolQC, MiscFeature, Alley, or Fence
-
-    # first, get names of categorical variables (minus BsmtCond and MSSubClass since those are special cases)
-    cat_vars = @chain dataset begin
-        dtype_info
-        filter(
-            x ->
-                x.dtype ∈ [
-                    CategoricalValue{String,UInt32},
-                    Union{Missing,CategoricalValue{String,UInt32}},
-                ] && x.col ∉ ["BsmtCond", "MSSubClass"],
-            _,
-        )
-        _[!, :col]
-        Symbol.(_)
-    end
-
-    # fix BsmtCond and MSSubClass levels
-    out_df = @chain dataset begin
-        select(
-            Symbol.(names(dataset)),
-            :BsmtCond => (x -> levels!(x, ["Po", "Fa", "TA", "Gd", "Ex"])) => :BsmtCond,
-            :MSSubClass =>
-                (
-                    x -> levels!(
-                        x,
-                        [
-                            "20",
-                            "30",
-                            "40",
-                            "45",
-                            "50",
-                            "60",
-                            "70",
-                            "75",
-                            "80",
-                            "85",
-                            "90",
-                            "120",
-                            "150",
-                            "160",
-                            "180",
-                            "190",
-                        ],
-                    )
-                ) => :MSSubClass,
-        )
-    end
-
-    # for every categorical variable
-    for varname ∈ cat_vars
-        levels!(out_df[!, varname], levels(full_data[!, varname]))
-    end
-
-    return out_df
-end
+#%% Getting Training Data Ready
 
 X_train = @chain train select(Not(:SalePrice))
 
@@ -344,7 +165,7 @@ y_train = float.(train[!, :SalePrice])
 
 #%% Getting Baseline Results
 
-baseline_results = DataFrame(
+baseline_results = @chain DataFrame(
     model = reg_model_names,
     cv_rmse = [
         evaluate(
@@ -355,9 +176,9 @@ baseline_results = DataFrame(
             verbosity = 0,
         ).measurement[1] for reg ∈ reg_model_pipelines
     ],
-)
-
-baseline_results = @chain baseline_results sort(_, :cv_rmse)
+) begin
+    sort(:cv_rmse)
+end
 
 @df baseline_results bar(
     :model,
@@ -375,3 +196,4 @@ baseline_results = @chain baseline_results sort(_, :cv_rmse)
 # 3. BaggingRegressor
 # 4. RandomForestRegressor
 # 5. ARD
+# 6. Elastic Net
