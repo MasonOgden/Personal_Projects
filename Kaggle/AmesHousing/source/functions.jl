@@ -1,6 +1,11 @@
-dtype_info(dataframe) = DataFrame(
+eltype_info(dataframe) = DataFrame(
     col = names(dataframe),
-    dtype = eltype.(eachcol(dataframe))
+    element_type = eltype.(eachcol(dataframe))
+)
+
+type_info(dataframe) = DataFrame(
+    col = names(dataframe),
+    overall_type = typeof.(eachcol(dataframe))
 )
 
 has_value(value) = ismissing(value) ? 0.0 : 1.0
@@ -15,11 +20,20 @@ function fix_na(input_vec)
     return vector
 end
 
-drop_unnecessary_features(dataset) = @chain dataset select(Not([:Id, :FireplaceQu]))
+drop_unnecessary_features(dataset) = @chain dataset select(Not([:FireplaceQu]))
 
 # first fix NAs, then convert some to numeric, make factors categorical
 function fix_dtypes(dataset)
-    should_be_numeric = [:MasVnrArea, :LotFrontage, :GarageYrBlt]
+    if "SalePrice" ∈ names(dataset)
+        should_be_numeric = [:MasVnrArea, :LotFrontage, :GarageYrBlt]
+    else
+        should_be_numeric = [
+            :MasVnrArea, :LotFrontage, :GarageYrBlt,
+            :BsmtFinSF1, :TotalBsmtSF, :GarageArea,
+            :BsmtFinSF2, :BsmtUnfSF, :BsmtFullBath,
+            :BsmtHalfBath, :GarageCars]
+    end
+    
     should_be_factor = [:MSSubClass, :MoSold, :YrSold]
     
     out_df = @chain dataset begin
@@ -35,8 +49,8 @@ function fix_dtypes(dataset)
 
     # get names of all categorical columns
     cat_vars = @chain out_df begin
-        dtype_info
-        filter(x -> x.dtype ∈ [String, Union{Missing, String}], _)
+        eltype_info
+        filter(x -> x.element_type ∈ [String, Union{Missing, String}], _)
         _[!, :col]
         Symbol.(_)
     end
@@ -71,9 +85,9 @@ function fix_lot_frontage(dataset)
 end
 
 function remove_missing_union(col_vector)
-    if eltype(col_vector) == Union{Missing, CategoricalValue{String, UInt32}}
-        categorical(string.(col_vector))
-    elseif eltype(col_vector) == Union{Missing, Int64}
+    if typeof(col_vector) == CategoricalArrays.CategoricalVector{Union{Missing, String}, UInt32, String, CategoricalArrays.CategoricalValue{String, UInt32}, Missing}
+        CategoricalArray(string.(col_vector))
+    elseif typeof(col_vector) == Vector{Union{Missing, Int64}}
         convert(Vector{Int64}, col_vector)
     else
         col_vector
@@ -82,8 +96,8 @@ end
 
 function finalize_types(dataset)
     cols_marked_missing = @chain dataset begin
-        dtype_info
-        filter(x -> x.dtype ∉ [CategoricalValue{String, UInt32}, Int64, Float64], _)
+        type_info
+        filter(x -> x.overall_type ∉ [Vector{Float64}, Vector{Int64}, CategoricalArrays.CategoricalVector{String, UInt32, String, CategoricalArrays.CategoricalValue{String, UInt32}, Union{}}], _)
         _[!, :col]
         Symbol.(_)
     end
@@ -98,14 +112,14 @@ function finalize_types(dataset)
 
     @chain dataset begin
         select(Symbol.(names(dataset)),
-            cols_need_fixing .=> remove_missing_union .=> cols_need_fixing
+            cols_need_fixing .=> disallowmissing .=> cols_need_fixing
         )
     end
 end
 
 function levels_per_factor(dataframe)
     cat_vars = @chain dataframe begin
-        dtype_info
+        eltype_info
         filter(x -> x.dtype ∈ [Union{Missing, CategoricalValue{String, UInt32}}, CategoricalValue{String, UInt32}], _)
         _[!, :col]
     end
@@ -146,15 +160,8 @@ function match_factor_levels(dataset, full_data)
 
     # first, get names of categorical variables (minus BsmtCond and MSSubClass since those are special cases)
     cat_vars = @chain dataset begin
-        dtype_info
-        filter(
-            x ->
-                x.dtype ∈ [
-                    CategoricalValue{String,UInt32},
-                    Union{Missing,CategoricalValue{String,UInt32}},
-                ] && x.col ∉ ["BsmtCond", "MSSubClass"],
-            _,
-        )
+        type_info
+        filter(x -> x.overall_type ∉ [Vector{Int64}, Vector{Float64}, Vector{Union{Missing, Int64}}] && x.col ∉ ["BsmtCond", "MSSubClass"], _)
         _[!, :col]
         Symbol.(_)
     end
@@ -200,8 +207,45 @@ function match_factor_levels(dataset, full_data)
 end
 
 ready_data(dataframe, full_dataframe) =
-    @chain dataframe Impute.srs finalize_types coerce(:SalePrice => Continuous) match_factor_levels(
+    @chain dataframe srs disallowmissing coerce(:SalePrice => Continuous) match_factor_levels(
         full_dataframe
     )
+
+
+function generate_submission(model_pipeline_fit, new_data)
+    # remove Id from predictors
+    X = new_data[!, Not(:Id)]
+
+    if "SalePrice" ∈ names(X) 
+        X = X[!, Not(:SalePrice)]
+    end
+
+    DataFrame(
+        Id = new_data[!, :Id],
+        SalePrice = predict(model_pipeline_fit, X)
+    )
+end
+
+mutable struct MultiLayerBuilder <: MLJFlux.Builder
+    n_hidden_layers :: Int
+    hidden_layer_width :: Int
+end
+
+function MLJFlux.build(nn::MultiLayerBuilder, rng, n_in, n_out)
+	init = Flux.glorot_uniform(rng)
+
+    # initialize list of layers with input layer
+    layer_list = [Dense(n_in, nn.hidden_layer_width, init = init)]
+    
+    # add hidden layers
+    for _ ∈ 1:nn.n_hidden_layers
+        push!(layer_list, Dense(nn.hidden_layer_width, nn.hidden_layer_width, init = init))
+    end
+
+    # place output layer at the end
+    push!(layer_list, Dense(nn.hidden_layer_width, n_out, init = init))
+
+	return Chain(layer_list...)
+end
 
 println("Functions imported")

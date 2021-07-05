@@ -1,8 +1,6 @@
-#%% Packages and functions
-using CSV, DataFrames, Statistics, Plots, MLJ
-import Impute
-using StatsPlots: @df
-using Chain: @chain
+#%% Packages and Functions
+import CSV
+using DataFrames, Plots, MLJ; using Impute: srs; using StatsPlots: @df; using Chain: @chain
 
 code_folder = "source"
 
