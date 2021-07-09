@@ -1,228 +1,258 @@
 #%% Packages
-using CSV, DataFrames, StatsModels, Statistics, StatsBase, ScikitLearn, Lathe, Missings
+using CSV, DataFrames, Statistics, MLJ, Plots
+using Impute: srs
+using StatsPlots: @df
+using Pipe: @pipe
 
 #%% Data
+user = "mogde"
 
-cd("C:/Users/Mason/Desktop/Git Repositories/Personal_Projects/Kaggle/Titanic")
-train = DataFrame(CSV.File("datasets/train.csv"))
-test = DataFrame(CSV.File("datasets/test.csv"))
-
-DataFrame(
-    col_name = train |> names,
-    col_type = eltype.(eachcol(train))
-)
+cd("C:/Users/$user/Desktop/Git Repositories/Personal_Projects/Kaggle/Titanic")
+train_raw = "datasets/train.csv" |> CSV.File |> DataFrame
+test_raw = "datasets/test.csv" |> CSV.File |> DataFrame
 
 #%% Data Cleaning
+# checking how many missing values there are and in which columns
 
-num_missing(colname) = train[:, colname] .|> ismissing |> sum
+function num_missing_per_column(dataframe)
+    num_missing(colname) = dataframe[:, colname] .|> ismissing |> sum
 
-missing_df = DataFrame(column = train |> names,
-                       num_missing = train |> names .|> num_missing
-                      )
-
-function process_data(in_data, training_info)
-    dataframe = select(
-        in_data, Not([:PassengerId, :Name, :Ticket, :Cabin])
-        )
-
-    # convert strings to categories, SibSp and dParchto float
-    transform!(dataframe, [:Pclass, :Sex, :Embarked] .=> categorical, renamecols=false)
-    transform!(dataframe, [:SibSp, :Parch] .=> float, renamecols=false)
-    #transform!(dataframe, :Pclass => categorical, renamecols=false)
-    #transform!(dataframe, :Sex => categorical, renamecols=false)
-    #transform!(dataframe, :Embarked => categorical, renamecols=false)
-    #dataframe[!, :SibSp] = convert.(AbstractFloat, dataframe[:, :SibSp])
-    #dataframe[!, :Parch] = convert.(AbstractFloat, dataframe[:, :Parch])
-
-    # impute columns with missing values
-    dataframe[:, :Age] = coalesce.(dataframe[:, :Age], training_info["age_median"])
-    dataframe[:, :Embarked] = coalesce.(dataframe[:, :Embarked], training_info["embarked_mode"])
-
-    # scaling numeric
-    dataframe[:, :Age] = training_info["age_scaler"].predict(dataframe[:, :Age]) |> skipmissing |> collect
-    dataframe[:, :SibSp] = training_info["sibsp_scaler"].predict(dataframe[:, :SibSp])
-    dataframe[:, :Parch] = training_info["parch_scaler"].predict(dataframe[:, :Parch])
-    dataframe[:, :Fare] = training_info["fare_scaler"].predict(dataframe[:, :Fare])
-
-    # creating dummy variables, drop originals
-    dummifier = Lathe.preprocess.OneHotEncoder()
-    dummifier.predict(dataframe, :Pclass)
-    dummifier.predict(dataframe, :Sex)
-    dummifier.predict(dataframe, :Embarked)
-    select!(dataframe, Not([:Pclass, :Sex, :Embarked]))
-
-    # now convert boolean columns to 0/1 columns
-    transform!(dataframe, ["1", "2", "3", "S", "C", "Q", "male", "female"] .=> float, renamecols=false)
-
-    return dataframe
+    @pipe DataFrame(column = names(dataframe),
+                    num_missing = dataframe |> names .|> num_missing
+                    ) |>
+                filter(row -> row.num_missing > 0, _)
 end
 
+train_raw |> num_missing_per_column
 
+# removes unnecessary columns, converts to correct types
+function clean_data(in_data, is_test)
+    if is_test
+        @pipe in_data |> 
+            transform!(_, [:Pclass, :Sex, :Embarked] .=> categorical) |>
+            select(_, Not([:Pclass, :Sex, :Embarked]), 
+                :Pclass_categorical => :passenger_class,
+                :Sex_categorical => :sex,
+                :Embarked_categorical => :embarked_location,
+                :Age => :age,
+                :SibSp => :num_siblings,
+                :Parch => :parch,
+                :Fare => :fare) |>
+            select(_, [:age, :num_siblings, :parch, :fare,
+                       :passenger_class, :sex, :embarked_location])
+    else
+        @pipe in_data |> 
+            transform!(_, [:Survived, :Pclass, :Sex, :Embarked] .=> categorical) |>
+            select(_, Not([:Pclass, :Sex, :Embarked]), 
+                :Survived_categorical => :survived,
+                :Pclass_categorical => :passenger_class,
+                :Sex_categorical => :sex,
+                :Embarked_categorical => :embarked_location,
+                :Age => :age,
+                :SibSp => :num_siblings,
+                :Parch => :parch,
+                :Fare => :fare) |>
+            select(_, [:survived, :age, :num_siblings, :parch, :fare,
+                   :passenger_class, :sex, :embarked_location])
+
+    end
+end
+
+train = @pipe train_raw |> clean_data(_, false)
+test = @pipe test_raw |> clean_data(_, true)
+
+train |> schema
+
+#%% Preprocessing Data
+
+X_train = @pipe train |> select(_, Not(:survived)) |> Matrix |> MLJ.table
+y_train = train[!, :survived]
+
+# define what type of imputation, encoding, and standardization I want
 training_info = Dict(
-    "age_median" => train[:, :Age] |> skipmissing |> median,
-    "embarked_mode" => train[:, :Embarked] |> skipmissing |> mode |> string,
-    "age_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train[:, :Age], train[:, :Age] |> skipmissing |> median)),
-    "sibsp_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train[:, :SibSp], train[:, :SibSp] |> skipmissing |> median)),
-    "parch_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train[:, :Parch], train[:, :Parch] |> skipmissing |> median)),
-    "fare_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train[:, :Fare], train[:, :Fare] |> skipmissing |> median))
+    "imputer" => srs,
+    "dummifier" => MLJ.OneHotEncoder(ordered_factor = false, drop_last = true),
+    "standardizer" => MLJ.Standardizer(count = true)
 )
 
-#%% Making Cross-Validation Folds
-function get_cross_val_splits(data, k)
-    # all indices
-    all_indices = Set{Int}(1:nrow(data))
-    # indices that aren't in a fold yet
-    indices_remaining = Set(1:nrow(data))
-    # number of indices per fold
-    fold_size = convert(Int, floor(nrow(data) / k))
-    # will be of the form
-    folds = []
-    for i in 1:(k - 1)
-        test_indices = Set(StatsBase.sample(collect(indices_remaining), fold_size, replace=false))
-        train_indices = setdiff(all_indices, test_indices)
+function preprocess_data(X, training_info)
+    # impute with SRS
+    X_imputed = training_info["imputer"](X) |> DataFrame
+    X_imputed[!, :x1] = convert.(Float64, X_imputed[!, :x1])
+    X_imputed[!, :x2] = convert.(Int64, X_imputed[!, :x2])
+    X_imputed[!, :x3] = convert.(Int64, X_imputed[!, :x3])
+    X_imputed[!, :x4] = convert.(Float64, X_imputed[!, :x4])
+    X_imputed[!, :x5] = convert.(Int64, X_imputed[!, :x5])
+    X_imputed[!, :x6] = categorical(convert(Vector{String}, X_imputed[:, :x6]))
+    X_imputed[!, :x7] = categorical(convert(Vector{String}, X_imputed[:, :x7]))
 
-        # remove these test indices from the list of indices
-        setdiff!(indices_remaining, test_indices)
+    # fit standardizer to imputed data
+    standardizer_fit = MLJ.fit!(machine(training_info["standardizer"], X_imputed))
+    # fit dummifier to imputed data
+    dummifier_fit = MLJ.fit!(machine(training_info["dummifier"], X_imputed))
 
-        # add to folds list
-        push!(folds, (collect(train_indices), collect(test_indices)))
-    end
-
-    # last fold is just whatever's left
-    last_test_indices = indices_remaining
-    last_train_indices = setdiff(all_indices, last_test_indices)
-
-    push!(folds, (collect(last_train_indices), collect(last_test_indices)))
-
-    # convert indices to dataframes
-    return [(data[pair[1], :], data[pair[2], :]) for pair in folds]
+    # apply standardizer and dummifier
+    @pipe X_imputed |> 
+        MLJ.transform(standardizer_fit, _) |> 
+        MLJ.transform(dummifier_fit, _) |> 
+        Matrix |> 
+        MLJ.table
 end
 
-folds = get_cross_val_splits(train, 10)
+X = preprocess_data(X_train, training_info)
+y = y_train
 
-#%% Fitting Model
-model1_cols = [:Pclass]
-model2_cols = [:Pclass, :Sex]
-model3_cols = [:Pclass, :Sex, :Age]
-model4_cols = [:Pclass, :Sex, :Age, :SibSp]
-model5_cols = [:Pclass, :Sex, :Age, :SibSp, :Parch]
-model6_cols = [:Pclass, :Sex, :Age, :SibSp, :Parch, :Fare]
-model7_cols = [:Pclass, :Sex, :Age, :SibSp, :Parch, :Fare, :Embarked]
+#%% Getting Baseline Model Results
 
-model_col_list= [model1_cols, model2_cols, model3_cols, model4_cols, model5_cols, model6_cols, model7_cols]
+model_names = [
+    #"adaboost",
+	"bagging_clf",
+	"bayesian_qda",
+	"decision_tree",
+	"extra_trees",
+	"knn",
+	"kernel_perceptron",
+    "linear_binary",
+    "logistic",
+	"random_forest",
+	"xgb"
+]
 
-function cross_validation_metrics(folds, model)
+all_models = [
+    #(@load AdaBoostClassifier pkg = ScikitLearn),
+	(@load BaggingClassifier pkg = ScikitLearn)(),
+	(@load BayesianQDA pkg = ScikitLearn)(),
+	(@load DecisionTreeClassifier pkg = DecisionTree)(),
+	(@load ExtraTreesClassifier pkg = ScikitLearn)(),
+	(@load KNNClassifier pkg = NearestNeighborModels)(),
+	(@load KernelPerceptronClassifier pkg = BetaML)(),
+    (@load LinearBinaryClassifier pkg = GLM)(),
+    (@load LogisticClassifier pkg = MLJLinearModels)(),
+	(@load RandomForestClassifier pkg = DecisionTree)(),
+	(@load XGBoostClassifier pkg = XGBoost)()
+]
 
-    out_metrics = Dict()
+baseline_results = @pipe DataFrame(
+	model_name = model_names,
+	cv_acc = [MLJ.evaluate(clf, X, y, resampling=CV(shuffle=true, nfolds=5),
+					   measure=accuracy, verbosity=0,
+					   operation=predict_mode).measurement[1]
+			  for clf ∈ all_models]
+) |> sort(_, :cv_acc, rev = true)
 
-    tp = 0
-    fp = 0
-    fn = 0
-    tn = 0
-
-
-    for fold in folds
-        # extract training and testing data from the fold
-        train_data = fold[1]
-        test_data = fold[2]
-
-        # fit preprocessing on training data:
-        training_info = Dict(
-            "age_median" => train_data[:, :Age] |> skipmissing |> median,
-            "embarked_mode" => train_data[:, :Embarked] |> skipmissing |> mode |> string,
-            "age_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train_data[:, :Age], train_data[:, :Age] |> skipmissing |> median)),
-            "sibsp_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train_data[:, :SibSp], train_data[:, :SibSp] |> skipmissing |> median)),
-            "parch_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train_data[:, :Parch], train_data[:, :Parch] |> skipmissing |> median)),
-            "fare_scaler" => Lathe.preprocess.StandardScaler(coalesce.(train_data[:, :Fare], train_data[:, :Fare] |> skipmissing |> median))
-        )
-
-        # preprocess data, subset to just chosen features
-        X = select(process_data(train_data, training_info), Not(:Survived))
-        y = train_data[:, :Survived]
-        X_test = select(process_data(test_data, training_info), Not(:Survived))
-        y_test = test_data[:, :Survived]
-
-        # fit model on training data
-        ScikitLearn.fit!(model, X, y)
-        # predict on test data:
-        preds = convert.(Int, round.(Vector{Float64}(ScikitLearn.predict(lr_model, X_test))))
-
-        results_df = DataFrame(
-            prediction = preds,
-            truth = y_test
-        )
-        tp += filter(row -> (row[1] == 1 & row[2] == 1), results_df) |> nrow
-        fp += filter(row -> (row[1] == 1 & row[2] == 0), results_df) |> nrow
-        fn += filter(row -> (row[1] == 0 & row[2] == 0), results_df) |> nrow
-        tn += filter(row -> (row[1] == 0 & row[2] == 0), results_df) |> nrow
-
-    end
-    out_metrics["tp"] = tp
-    out_metrics["fp"] = fp
-    out_metrics["fn"] = fn
-    out_metrics["tn"] = tn
-
-    out_metrics["acc"] = (tp + tn) / (fp + fn)
-    out_metrics["prec"] = tp / (tp + fp)
-
-    recall = tp / (tp + fn)
-    out_metrics["recall"] = recall
-    out_metrics["tpr"] = recall
-    out_metrics["fpr"] = fp / (fp + tn)
-
-    return out_metrics
-end
-
-# results_df = DataFrame(
-#     model = model_names,
-#     accuracy = [metrics_dict["acc"] for metrics_dict in model_results],
-#     precision = [metrics_dict["prec"] for metrics_dict in model_results],
-#     recall = [metrics_dict["recall"] for metrics_dict in model_results],
-#     true_positive_rate = [metrics_dict["tpr"] for metrics_dict in model_results],
-#     false_positive_rate = [metrics_dict["fpr"] for metrics_dict in model_results],
-#     )
-
-# sort(results_df, :accuracy, rev=true)
-
-#%% ScikitLearn
-
-@sk_import linear_model: LogisticRegression
-@sk_import neural_network: MLPClassifier
-@sk_import discriminant_analysis: LinearDiscriminantAnalysis
-@sk_import neighbors: KNeighborsClassifier
-@sk_import svm: (SVC, LinearSVC, NuSVC)
-@sk_import tree: DecisionTreeClassifier
-@sk_import ensemble: (RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier)
-
-classifiers = [
-    KNeighborsClassifier(3),
-    LinearSVC(C=0.025),
-    SVC(),
-    NuSVC(),
-    DecisionTreeClassifier(),
-    RandomForestClassifier(),
-    AdaBoostClassifier(),
-    GradientBoostingClassifier(),
-    LinearDiscriminantAnalysis(),
-    LogisticRegression(fit_intercept=true)
-    ]
-
-lr_model = LogisticRegression()
-
-#out = cross_validation_metrics(folds, lr_model)
-
-X_train = select(process_data(train, training_info), Not(:Survived))
-y_train = train[:, :Survived]
-
-DataFrame(
-    col_name = X_train |> names,
-    col_type = eltype.(eachcol(X_train))
+@df baseline_results bar(
+	:model_name,
+	:cv_acc,
+	orientation = :h,
+	yflip = true,
+	legend = false,
+	xlabel = "Cross-Validated Accuracy",
+	title = "Comparing Baseline Models"
 )
 
-X_train[:, :Age] .|> ismissing |> sum
+#%% Tuning Best Models
 
-disallowmissing(X_train[:, :Age])
+# ExtraTrees
 
-convert(Vector{Float64}, X_train[:, :Age])
+xt = (@load ExtraTreesClassifier pkg = ScikitLearn)()
 
-#ScikitLearn.fit!(lr_model, X_train, y_train)
+trees_range = range(xt, :n_estimators, lower = 50, upper = 150)
+min_samples_split_range = range(xt, :min_samples_split, lower = 2, upper = 10)
+min_samples_leaf_range = range(xt, :min_samples_leaf, lower = 1, upper = 7)
+
+tuned_xt = TunedModel(model=xt,
+					  tuning=Grid(resolution=5),
+					  resampling=CV(shuffle=true, nfolds=5),
+					  ranges=[trees_range, min_samples_split_range, min_samples_leaf_range],
+					  operation=predict_mode,
+					  measure=accuracy)
+
+tuned_xt_mach = machine(tuned_xt, X, y)
+
+MLJ.fit!(tuned_xt_mach)
+
+xt_params = tuned_xt_mach |> fitted_params
+xt_report = tuned_xt_mach |> report
+
+xt_params.best_model
+xt_report.best_history_entry # 83.16% accuracy
+
+
+# Bagging Classifier
+
+ψ = (@load BaggingClassifier pkg = ScikitLearn)()
+
+n_estimators_range = range(ψ, :n_estimators, lower = 10, upper = 100)
+max_samples_range = range(ψ, :max_samples, lower = 0.5, upper = 1.0)
+max_features_range = range(ψ, :max_features, lower = 0.5, upper = 1.0)
+
+tuned_ψ = TunedModel(model=ψ,
+					  tuning=Grid(resolution=5),
+					  resampling=CV(shuffle=true, nfolds=5),
+					  ranges=[n_estimators_range, max_samples_range, max_features_range],
+					  operation=predict_mode,
+					  measure=accuracy)
+
+tuned_ψ_mach = machine(tuned_ψ, X, y)
+
+MLJ.fit!(tuned_ψ_mach)
+
+ψ_params = tuned_ψ_mach |> fitted_params
+ψ_report = tuned_ψ_mach |> report
+
+ψ_params.best_model
+ψ_report.best_history_entry # 83.50% accuracy
+
+# XGBoost
+
+xgb = (@load XGBoostClassifier pkg = XGBoost)()
+
+# tuning greek letter parameters
+
+η_range = range(xgb, :eta, lower = 0.1, upper = 0.5)
+γ_range = range(xgb, :gamma, lower = 0.01, upper = 0.1)
+λ_range = range(xgb, :lambda, lower = 0.5, upper = 1.0)
+α_range = range(xgb, :alpha, lower = 0, upper = 0.5)
+
+tuned_xgb = TunedModel(model=xgb,
+					   tuning=Grid(resolution=4),
+					   resampling=CV(shuffle=true, nfolds=5),
+					   ranges=[η_range, γ_range, λ_range, α_range],
+					   operation=predict_mode,
+					   measure=accuracy)
+
+tuned_xgb_mach = machine(tuned_xgb, X, y)
+
+MLJ.fit!(tuned_xgb_mach)
+
+xgb_params = tuned_xgb_mach |> fitted_params
+xgb_report = tuned_xgb_mach |> report
+
+xgb_params.best_model
+xgb_report.best_history_entry # 82.06% accuracy
+
+# tuning other parameters
+
+xgb2 = (@load XGBoostClassifier pkg = XGBoost)(eta = 0.23333333333333334, gamma = 0.01, lambda = 0.5, alpha = 0.5)
+
+max_depth_range = range(xgb2, :max_depth, lower = 2, upper = 10)
+num_round_range = range(xgb2, :num_round, lower = 50, upper = 200)
+colsample_bylevel_range = range(xgb2, :colsample_bylevel, lower = 0.7, upper = 1.0)
+
+
+tuned_xgb2 = TunedModel(model=xgb2,
+					    tuning=Grid(resolution=5),
+					    resampling=CV(shuffle=true, nfolds=5),
+					    ranges=[max_depth_range, num_round_range, colsample_bylevel_range],
+					    operation=predict_mode,
+					    measure=accuracy)
+
+tuned_xgb2_mach = machine(tuned_xgb2, X, y)
+
+MLJ.fit!(tuned_xgb2_mach)
+
+xgb2_params = tuned_xgb2_mach |> fitted_params
+xgb2_report = tuned_xgb2_mach |> report
+
+xgb2_params.best_model
+xgb2_report.best_history_entry # 82.94% accuracy
