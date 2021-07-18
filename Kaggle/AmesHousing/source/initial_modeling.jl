@@ -1,6 +1,9 @@
 #%% Packages and Functions
-import CSV
-using DataFrames, Plots, MLJ; using Impute: srs; using StatsPlots: @df; using Chain: @chain
+import CSV, MLJFlux
+using DataFrames, Plots, MLJ, CategoricalArrays, Flux
+using Impute: srs
+using StatsPlots: @df
+using Chain: @chain
 
 code_folder = "source"
 
@@ -174,9 +177,7 @@ baseline_results = @chain DataFrame(
             verbosity = 0,
         ).measurement[1] for reg ∈ reg_model_pipelines
     ],
-) begin
-    sort(:cv_rmse)
-end
+) sort(:cv_rmse)
 
 @df baseline_results bar(
     :model,
