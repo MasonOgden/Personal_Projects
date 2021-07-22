@@ -1,6 +1,6 @@
 #%% Packages
-import CSV
-using DataFrames, Plots, MLJ, CategoricalArrays
+import CSV, MLJFlux
+using DataFrames, Plots, MLJ, CategoricalArrays, Flux
 using Impute: srs
 using StatsPlots: @df
 using Chain: @chain
@@ -443,12 +443,17 @@ en_pipeline = @pipeline(
         (@load ElasticNetRegressor pkg = MLJLinearModels verbosity = 0)()
     )
 
+
+λ_range = range(en_pipeline, :(elastic_net_regressor.lambda), lower = 0.5, upper = 2)
+γ_range = range(en_pipeline, :(elastic_net_regressor.gamma), lower = 0.0, upper = 1.0)
+
+
 tuned_en_pipeline = @chain en_pipeline begin
     TunedModel(
         model = _,
-        tuning = Grid(resolution = 5),
+        tuning = Grid(resolution = 11),
         resampling = CV(shuffle = true, nfolds = 5),
-        ranges = [_range, _range, _range]
+        ranges = [λ_range, γ_range]
     )
     machine(X_train, y_train)
 end
@@ -458,8 +463,11 @@ MLJ.fit!(tuned_en_pipeline)
 en_params = fitted_params(tuned_en_pipeline)
 en_report = report(tuned_en_pipeline)
 
-en_params.best_model # 
-en_report.best_history_entry # $
+en_params.best_model
+en_report.best_history_entry # $31,786.66
+
+en_pipeline.elastic_net_regressor.lambda = en_params.best_model.elastic_net_regressor.lambda # 1.25
+en_pipeline.elastic_net_regressor.gamma = en_params.best_model.elastic_net_regressor.gamma # 0.9
 
 
 #%% Manually Defining Best Models
@@ -471,7 +479,8 @@ model_names = [
     "ExtraTrees",
     "BaggingRegressor",
     "RandomForestRegressor",
-    "ARDRegressor"
+    "ARDRegressor",
+    "ElasticNetRegressor"
 ]
 
 tuned_pipelines = [
@@ -547,6 +556,19 @@ tuned_pipelines = [
         (@load ARDRegressor pkg = ScikitLearn verbosity = 0)(
             n_iter = 124
         )
+    ),
+    @pipeline(
+        # get data ready for modeling
+        X -> ready_data(X, train),
+        # Standardize numeric variables
+        Standardizer(count = true),
+        # Dummify categorical variables
+        OneHotEncoder(ordered_factor = false, drop_last = true),
+        # load into model
+        (@load ElasticNetRegressor pkg = MLJLinearModels verbosity = 0)(
+            lambda = 1.25,
+            gamma = 0.9
+        )
     )
 ]
 
@@ -558,18 +580,6 @@ cv_rmses = [
         resampling = CV(shuffle = true, nfolds = 5),
         verbosity = 0,
     ).measurement[1] for reg ∈ tuned_pipelines
-]
-
-#%% Defining Results
-
-#### If you have already tuned all models in this session
-
-cv_rmses = [
-    gbr_report2.best_history_entry.measurement[1],
-    xt_report2.best_history_entry.measurement[1],
-    br_report.best_history_entry.measurement[1],
-    rf_report2.best_history_entry.measurement[1],
-    ard_report2.best_history_entry.measurement[1]
 ]
 
 #%% Gathering Results

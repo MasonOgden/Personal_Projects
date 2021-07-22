@@ -14,7 +14,7 @@ include(joinpath(code_folder, "functions.jl"))
 dataset_dir = "datasets"
 
 df = @chain dataset_dir joinpath("train.csv") CSV.File DataFrame clean_data
-#test = @chain dataset_dir joinpath("test.csv") CSV.File DataFrame clean_data
+#test = @chain dataset_dir joinpath("tesadd t.csv") CSV.File DataFrame clean_data
 X_data = select(df, Not([:SalePrice, :Id]))
 
 y_data = float.(df[!, :SalePrice])
